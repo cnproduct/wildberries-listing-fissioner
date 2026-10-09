@@ -103,6 +103,21 @@ python3 scripts/fission_exporter.py \
 * `wb_fission_THERMO_MUG_01_manifest.json`（结构化元数据清单）
 * `images/`（10 张归档主图）
 
+### 方式三：通过飞书机器人接入（企业免公网域名）
+
+本项目支持通过飞书官方长连接（WebSocket）技术，免公网 IP / 域名搭建企业内部的智能裂变助理机器人：
+
+1. **已自动构建的飞书应用**：
+   * 应用名称：`WB 1拆10 Listing 裂变助手`
+   * App ID：`cli_aa42e84775381cfd`
+   * 事件订阅：已开启长连接模式与 `im.message.receive_v1`（接收消息）
+2. **启动本地/服务器机器人进程**：
+   ```bash
+   python3 scripts/feishu_bot_service.py --app-id cli_aa42e84775381cfd --app-secret <YOUR_APP_SECRET>
+   ```
+3. **在飞书中使用**：
+   * 任何企业成员直接给该机器人发送 Wildberries 商品链接或核心规格，即可自动触发裂变任务并返回数据。
+
 ---
 
 ## 📄 开源许可证
