@@ -26,6 +26,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DEFAULT_APP_ID = "cli_aa42e84775381cfd"
+DEFAULT_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
 
 def create_feishu_client(app_id: str, app_secret: str) -> lark.Client:
     return lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
@@ -96,15 +97,26 @@ def build_event_handler(client: lark.Client, app_id: str):
             )
             # 在此调用 wildberries-listing-fissioner 内部生成与导出逻辑
             # 导出成功后回传给用户
-        elif text_content in ["帮助", "help", "/start", "你好"]:
+        elif text_content in ["帮助", "help", "/start", "你好", "hi", "功能"]:
             reply_text_message(
                 client,
                 msg_id,
                 "👋 你好！我是 **WB 1拆10 Listing 裂变机器人**。\n\n"
                 "📌 使用方法：\n"
                 "1. 直接将 Wildberries 商品链接发送给我（如 https://www.wildberries.ru/catalog/.../detail.aspx）；\n"
-                "2. 或发送【商品名称 + 核心规格参数】；\n"
+                "2. 或发送【商品名称 + 核心规格参数】（如：`裂变: 纯棉短袖T恤，黑白灰三色，宽松版型`）；\n"
                 "3. 我将自动为你并行生成 10 套俄语 SEO 图文资产并打包 WB 标准批量导入 Excel 表格！"
+            )
+        else:
+            reply_text_message(
+                client,
+                msg_id,
+                f"👋 收到你的消息：\"{text_content}\"\n\n"
+                "🤖 我是 **WB 1拆10 Listing 裂变助手**。\n\n"
+                "💡 **你可以发送以下内容触发服务：**\n"
+                "1. **发送 WB 商品链接**：直接粘贴 Wildberries 商品详情页 URL；\n"
+                "2. **发送品类描述**：输入【裂变: 商品名称，规格/卖点】；\n"
+                "3. **自动裂变 10 套资产**：系统将自动生成 10 维受众心智文案、生活化主图，并导出标准 WB 批量上架 Excel 表格！"
             )
 
     return lark.EventDispatcherHandler.builder("", "") \
@@ -114,7 +126,7 @@ def build_event_handler(client: lark.Client, app_id: str):
 def main():
     parser = argparse.ArgumentParser(description="Start Feishu WebSocket Bot for WB Fission")
     parser.add_argument("--app-id", default=os.getenv("FEISHU_APP_ID", DEFAULT_APP_ID), help="Feishu App ID")
-    parser.add_argument("--app-secret", default=os.getenv("FEISHU_APP_SECRET", ""), help="Feishu App Secret")
+    parser.add_argument("--app-secret", default=os.getenv("FEISHU_APP_SECRET", DEFAULT_APP_SECRET), help="Feishu App Secret")
     args = parser.parse_args()
 
     app_id = args.app_id
