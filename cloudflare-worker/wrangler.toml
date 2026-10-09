@@ -1,0 +1,11 @@
+name = "wb-fission-bot"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+FEISHU_APP_ID = "cli_aa42e84775381cfd"
+FEISHU_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
+
+[[routes]]
+pattern = "wb-bot.diytale.com/*"
+custom_domain = true
