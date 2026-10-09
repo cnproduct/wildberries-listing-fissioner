@@ -31,25 +31,10 @@ DEFAULT_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
 def create_feishu_client(app_id: str, app_secret: str) -> lark.Client:
     return lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
 
-def reply_text_message(client: lark.Client, message_id: str, content: str):
+def reply_text_message(client: lark.Client, message_id: str, chat_id: str, content: str):
     """
-    通过飞书 API 给用户回复文本消息
+    通过飞书 API 给用户回复文本消息（支持优先使用 reply，失败时自动降级使用 chat_id 发送）
     """
-    body = CreateMessageRequestBody.builder() \
-        .receive_id_type("chat_id") \
-        .msg_type("text") \
-        .content(json.dumps({"text": content}, ensure_ascii=False)) \
-        .build()
-
-    req = CreateMessageRequest.builder() \
-        .receive_id_type("message_id") \
-        .request_body(CreateMessageRequestBody.builder()
-                      .msg_type("text")
-                      .content(json.dumps({"text": content}, ensure_ascii=False))
-                      .build()) \
-        .build()
-    
-    # 使用回复接口或者直接按 message_id 回复
     try:
         reply_req = lark.api.im.v1.ReplyMessageRequest.builder() \
             .message_id(message_id) \
@@ -58,9 +43,26 @@ def reply_text_message(client: lark.Client, message_id: str, content: str):
                           .msg_type("text")
                           .build()) \
             .build()
-        client.im.v1.message.reply(reply_req)
+        resp = client.im.v1.message.reply(reply_req)
+        if not resp.success():
+            logging.warning(f"通过 message.reply 失败 (code={resp.code}, msg={resp.msg})，尝试通过 chat_id 发送...")
+            create_req = lark.api.im.v1.CreateMessageRequest.builder() \
+                .receive_id_type("chat_id") \
+                .request_body(lark.api.im.v1.CreateMessageRequestBody.builder()
+                              .receive_id(chat_id)
+                              .content(json.dumps({"text": content}, ensure_ascii=False))
+                              .msg_type("text")
+                              .build()) \
+                .build()
+            resp2 = client.im.v1.message.create(create_req)
+            if not resp2.success():
+                logging.error(f"通过 chat_id 发送也失败: code={resp2.code}, msg={resp2.msg}")
+            else:
+                logging.info(f"成功通过 chat_id 发送消息: chat_id={chat_id}")
+        else:
+            logging.info(f"成功通过 reply 回复消息: message_id={message_id}")
     except Exception as e:
-        logging.error(f"回复飞书消息异常: {e}")
+        logging.error(f"发送飞书消息发生未捕获异常: {e}", exc_info=True)
 
 def build_event_handler(client: lark.Client, app_id: str):
     def handle_message(data: P2ImMessageReceiveV1) -> None:
@@ -84,11 +86,14 @@ def build_event_handler(client: lark.Client, app_id: str):
         if not text_content:
             return
 
+        chat_id = message.chat_id
+
         # 判断是否为 WB 链接或裂变指令
         if "wildberries.ru" in text_content or "wb.ru" in text_content or text_content.startswith("裂变"):
             reply_text_message(
                 client,
                 msg_id,
+                chat_id,
                 "🚀 【WB 1拆10 裂变引擎】已接收任务！\n\n"
                 "• 核心商品解构完成\n"
                 "• 正在根据 10 维受众心智（北欧风、商务白领、户外露营、礼品仪式感等）生成 10 套去重俄语 SEO 标题与长文案\n"
@@ -101,6 +106,7 @@ def build_event_handler(client: lark.Client, app_id: str):
             reply_text_message(
                 client,
                 msg_id,
+                chat_id,
                 "👋 你好！我是 **WB 1拆10 Listing 裂变机器人**。\n\n"
                 "📌 使用方法：\n"
                 "1. 直接将 Wildberries 商品链接发送给我（如 https://www.wildberries.ru/catalog/.../detail.aspx）；\n"
@@ -111,6 +117,7 @@ def build_event_handler(client: lark.Client, app_id: str):
             reply_text_message(
                 client,
                 msg_id,
+                chat_id,
                 f"👋 收到你的消息：\"{text_content}\"\n\n"
                 "🤖 我是 **WB 1拆10 Listing 裂变助手**。\n\n"
                 "💡 **你可以发送以下内容触发服务：**\n"
