@@ -1,125 +1,80 @@
-# 🚀 Wildberries Listing Fissioner (1拆10 矩阵裂变引擎)
+# Wildberries Listing Fissioner
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Antigravity%20%7C%20Python-orange.svg)](https://github.com/cnproduct/wildberries-listing-fissioner)
-[![E-commerce](https://img.shields.io/badge/Target-Wildberries%20(WB)-purple.svg)](https://www.wildberries.ru)
+把一个商品的已确认事实转为多套俄语营销方案、场景主图与可审查资产包，默认十套。可用于 Codex 与 Antigravity 共享工作目录。
 
-基于 **Antigravity 平台级 Agent**（内置多模态推理、原生 `generate_image` 图像生成引擎与本地 Python 运行时），将单一商品彻底解构并平行裂变为 **10 个在受众心智、SEO 俄语词库、视觉光影场景与表格数据上 100% 物理与语义解耦的独立 Listing 矩阵资产**。
+本项目目前提供 Skill 指令、Python 导出器与飞书请求接收示例。自动商品抓取、图文生成执行器和 WB API 发布尚未接通。素材差异化不保证流量、平台审核通过或同商品重复创建获准。
 
-彻底告别外部笨重繁琐的 ComfyUI 流程，原生产出符合 Wildberries 平台规则的去重商品矩阵，有效避免店铺内部竞争与平台防关联风控，全方位收割长尾搜索流量。
+## 使用 Skill
 
----
+阅读 [SKILL.md](SKILL.md)，提供 WB 详情链接或平台货号、原图、真实规格与包装测量。Agent 先锁定商品事实，再选择适用的受众与场景，制作并逐项审查图文。
 
-## 🎯 核心 10 维受众心智与生图视觉风格矩阵
+材质、容量、性能、包装数量等事实不能因营销方案变化。卖家 SKU、WB 平台货号 nmId 和条码必须区分。
 
-| 序号 | 🎯 细分受众心智定位 (SEO 差异化方向) | 🔑 核心俄语检索词组 | 📸 原生 `generate_image` 场景与光影指令 (保持主体一致) |
-| :---: | :--- | :--- | :--- |
-| **01** | **北欧极简·居家生活家**<br>主打惬意、极简美学、居家点缀 | `для дома, уют, скандинавский стиль, минимализм, эстетика` | **北欧原木漫射晨光**：商品放置在浅色白橡木餐桌上，背景微焦虚化绿植与布艺沙发，清晨自然柔光从侧窗洒落。 |
-| **02** | **职场通勤·商务白领**<br>主打高效率、紧凑便携、办公收纳 | `в офис, деловой, компактный, органайзер, стиль, рабочий стол` | **现代高级暗调办公**：放置在深色胡桃木办公桌上，边缘露出一角超薄笔记本电脑与金属钢笔，侧向轮廓聚光灯，干练沉稳。 |
-| **03** | **户外露营·差旅达人**<br>主打轻量化、坚固便携、抗造耐用 | `в дорогу, для путешествий, туризм, кемпинг, легкий, надежный` | **自然日光微距写实**：商品置于户外露营实木折叠桌或干燥岩石表面，阳光明朗穿透，浅景深虚化松林或帐篷背景。 |
-| **04** | **节日送礼·仪式感买家**<br>主打送礼佳品、精致礼盒包装、仪式感 | `подарок девушке, подарок парню, на день рождения, сувенир, сюрприз` | **节日礼盒微光烘托**：放置在带丝绒缎带或半开高档礼盒旁的暖光展台，背景有点状节日暖黄散景光斑（Bokeh）。 |
-| **05** | **学生党·宿舍高性价比**<br>主打物美价廉、宿舍收纳、青春实用 | `для студентов, в общежитие, недорогой, практичный, комната` | **明亮活力收纳书桌**：放置在整洁的学生书架或白色洞洞板旁，光线通透均匀，高饱和活力生活感，空间紧凑整洁。 |
-| **06** | **母婴家庭·环保健康派**<br>主打纯净环保、安全无毒、亲肤温润 | `эко, безопасность, гипоаллергенный, для всей семьи, чистый дом` | **温润奶油风居室**：米白色亚麻布质感台面，搭配柔和米黄环境漫射光，背景点缀棉花或木质摆件，温润治愈。 |
-| **07** | **轻奢酒店·大理石现代**<br>主打专柜质感、五星级标准、奢华 | `премиум качество, люкс, отель, эстетика, эксклюзив` | **现代爵士白大理石**：冷灰纹理大理石台面，带柔和侧逆光与精致倒影，背景极简冷灰，突显高端专柜级金属/材质光泽。 |
-| **08** | **日常高频·实用耐用派**<br>主打爆款热销、结实牢固、每天必用 | `на каждый день, прочный, надежный, хит продаж, высокое качество` | **清晰多角度实景**：置于干净纯色的素雅台面上，多方位摄影柔光箱照明，高清晰度突出做工接缝、扎实材质与细腻触感。 |
-| **09** | **工业硬核·极客防护**<br>主打防摔抗磨、科技硬核、专业级性能 | `противоударный, защита, износостойкий, профессиональный, надежность` | **深灰微水泥与冷光**：深色水泥磨砂质感工作台面，冷色边缘轮廓硬光（Rim Light），体现防摔耐磨与现代极客硬朗质感。 |
-| **10** | **组合囤货·多件实惠装**<br>主打囤货划算、大促套装、全网爆款 | `комплект, набор, выгодно, акция, оптом, суперцена` | **通透摄影棚特写**：微俯拍 45 度角，专业影棚双向柔光伞，空间层次分明，呈现大促爆品视觉冲击力。 |
+## 本地导出
 
----
-
-## 🏗️ 裂变全流程架构
-
-```
-[原始 WB 链接 / 图片 + 规格]
-       │
-       ▼
- 1. 深度参数与特征解构 (提取固定物理特征 vs 可变心智特征)
-       │
-       ├─────────────────────────────────┐
-       ▼                                 ▼
- 2. 文本裂变 (10套俄语标题/描述)    3. 视觉裂变 (`generate_image`)
-    - 10 组独立 SEO 关键词池            - 传入原始图片保持主体不畸变
-    - 10 种排版结构 (自检降重 < 20%)    - 10 组光影与生活化背景重绘
-       │                                 │
-       └────────────────┬────────────────┘
-                        │
-                        ▼
- 4. 数据打包与多账号隔离 (`fission_exporter.py`)
-    - 自动合成符合 WB 标准的批量 Excel 导入表 (`WB_Batch_Import_<SKU>.xlsx`)
-    - 10 张差异化主图本地规整归档 (`wb_fission_<SKU>/images/`)
-    - 生成完整元数据清单 (`wb_fission_<SKU>_manifest.json`)
-```
-
----
-
-## 📁 项目目录结构
-
-```
-wildberries-listing-fissioner/
-├── SKILL.md                          # Antigravity 平台声明式 Skill 规约
-├── README.md                         # 详细技术与实战使用说明
-├── requirements.txt                  # Python 依赖清单
-├── LICENSE                           # 开源授权 (MIT)
-├── scripts/
-│   └── fission_exporter.py          # 数据打包与 WB 批量 Excel 生成引擎
-└── examples/
-    └── sample_fission_data.json      # 10 维裂变数据标准示例 Payload
-```
-
----
-
-## ⚡ 快速开始
-
-### 方式一：在 Antigravity 中直接作为 Skill 激活
-
-将本仓库克隆或复制至你的 Agent Skills 目录下（例如 `~/.gemini/config/skills/` 或项目下的 `.agents/skills/`）：
+Python 3.10+；先安装依赖：
 
 ```bash
-git clone https://github.com/cnproduct/wildberries-listing-fissioner.git ~/.gemini/config/skills/wildberries-listing-fissioner
+python3 -m pip install -r requirements.txt
+python3 scripts/fission_exporter.py --json examples/sample_fission_data.json --sku DEMO --out ./output
 ```
 
-在对话中直接发送指令：
-> “请使用 `wildberries-listing-fissioner` 技能，读取这个 Wildberries 产品链接（或原图），为我平行裂变 10 套去重 Listing，生成 10 张差异化场景主图并导出标准 WB 批量 Excel 表格。”
+示例是虚构教学资料，图片链接为占位地址，只能作为草稿演示。默认导出缺项清单，不自动补尺寸、重量、价格、折扣、品牌、原产国或条码。
 
----
-
-### 方式二：独立 Python CLI 脚本调用
-
-如果你已经拥有结构化的裂变 JSON 数据，可以直接调用导出脚本打包：
+实际商品资料完整后运行严格校验：
 
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
-
-# 2. 运行打包脚本
-python3 scripts/fission_exporter.py \
-  --json examples/sample_fission_data.json \
-  --sku "THERMO_MUG_01" \
-  --out ./output
+python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SELLER_SKU --out ./output/validated --strict
 ```
 
-脚本将自动在 `./output/wb_fission_THERMO_MUG_01/` 目录下生成：
-* `WB_Batch_Import_THERMO_MUG_01.xlsx`（Wildberries 官方标准批量创建商品格式）
-* `wb_fission_THERMO_MUG_01_manifest.json`（结构化元数据清单）
-* `images/`（10 张归档主图）
+数量不是十套时加 `--expected-count N`。图片相对路径按输入 JSON 所在目录解析。输出目录已存在时拒绝覆盖。
 
-### 方式三：通过飞书机器人接入（企业免公网域名）
+输出 `wb_fission_<SKU>/` 中包含：
 
-本项目支持通过飞书官方长连接（WebSocket）技术，免公网 IP / 域名搭建企业内部的智能裂变助理机器人：
+- `WB_Listing_Review_<SKU>.xlsx`：内部审查工作簿与 QA 清单。
+- `images/`：归档本地图像，保留实际文件格式。
+- `wb_fission_<SKU>_manifest.json`：版本、缺项、相对路径与草稿/校验状态。
 
-1. **已自动构建的飞书应用**：
-   * 应用名称：`WB 1拆10 Listing 裂变助手`
-   * App ID：`cli_aa42e84775381cfd`
-   * 事件订阅：已开启长连接模式与 `im.message.receive_v1`（接收消息）
-2. **启动本地/服务器机器人进程**：
-   ```bash
-   python3 scripts/feishu_bot_service.py --app-id cli_aa42e84775381cfd --app-secret <YOUR_APP_SECRET>
-   ```
-3. **在飞书中使用**：
-   * 任何企业成员直接给该机器人发送 Wildberries 商品链接或核心规格，即可自动触发裂变任务并返回数据。
+工作簿不是 WB 官方导入模板。正式导入必须下载卖家后台当前类目模板并验证字段映射。严格模式通过仅代表脚本校验通过，商品真实性、图像一致性与平台发布需分别验证。输入合同见 [references/export-contract.md](references/export-contract.md)。
 
----
+## 飞书网关
 
-## 📄 开源许可证
+### Cloudflare Worker
 
-本项目采用 [MIT License](LICENSE) 授权许可。
+源码见 `cloudflare-worker/src/index.js`。识别 WB 商品链接和平台货号，把每条请求保存到独立 KV 键；“进度”显示最近请求的真实待执行状态。不会根据耗时伪造进度，也不会保存聊天中的 WB Token 或声称店铺授权有效。
+
+部署前在 Cloudflare 受保护的 Secret 配置中设置：
+
+- `FEISHU_APP_SECRET`
+- `FEISHU_VERIFICATION_TOKEN`
+
+保留正确的 `FEISHU_APP_ID`、`WB_FISSION_KV` 绑定和域名配置。Webhook 当前支持未加密事件的 Verification Token 与 app_id 校验；加密事件会拒绝，解密及签名验证尚未实现。没有必要配置时拒绝处理事件。
+
+源码修改不会更新线上服务。本轮没有重新部署、发送飞书消息或创建 WB 商品。
+
+KV 中 `task:<sender>:<message>` 保存独立请求，`latest_task:<sender>` 仅是最近请求的指针。顺序重试可复用已保存请求；KV 最终一致性不能保证并发幂等、原子锁或消息必达。后续正式任务队列应使用持久队列与具备事务/租约的状态存储。
+
+### 本地长连接
+
+```bash
+python3 scripts/feishu_bot_service.py
+```
+
+启动前通过进程环境配置 `FEISHU_APP_SECRET` 和可选的 `FEISHU_APP_ID`。本地模式只演示消息接收，不持久化任务或令牌；自动生成和店铺发布尚未接通。
+
+## 已暴露凭证的处理
+
+旧版本在源码及配置中包含应用密钥。本轮已移除当前工作文件中的密钥并忽略本地凭证与用户数据目录，但 Git 历史和已部署服务没有因此改变。上线前必须在飞书后台轮换密钥，并更新受保护的环境配置。历史 Token 存储与日志是否存在应由维护者另行检查；本轮没有访问或删除线上数据。
+
+## 验证与协同
+
+```bash
+python3 -m unittest discover -s tests -v
+node --test tests/test_worker.mjs
+```
+
+测试均使用临时目录或模拟飞书服务，没有外部消息和商品发布。
+
+Antigravity 与 Codex 的共享进度、兼容性变更及下一步任务见 [CODEX_CONTEXT.md](CODEX_CONTEXT.md)。读取该文件与当前差异后再编辑；同一文件同时变化时合并处理，避免覆盖另一方的更新。
+
+[MIT License](LICENSE)

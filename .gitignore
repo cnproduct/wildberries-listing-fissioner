@@ -18,3 +18,11 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local credentials and private user data
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+data/

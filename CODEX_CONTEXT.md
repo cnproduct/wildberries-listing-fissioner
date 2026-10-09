@@ -1,55 +1,52 @@
-# Wildberries Listing Fissioner - Codex 协同开发与优化指南
+# Codex / Antigravity 共享开发记录
 
-本文档用于在 **Antigravity** 与 **Codex** 之间实现上下文无缝共享与协同开发，共同优化 `wildberries-listing-fissioner` 批量上架技能。
+共享仓库：`cnproduct/wildberries-listing-fissioner`。
 
----
+本地目录：`/Users/happy/Library/CloudStorage/GoogleDrive-cnproduct@gmail.com/我的云端硬盘/WPS同步盘/人人易 AI/.agents/skills/wildberries-listing-fissioner`。
 
-## 1. 项目全貌与当前进度
+## 2026-10-08：Codex 第一轮优化
 
-本项目旨在为跨境卖家提供一站式 **Wildberries 1 拆 10 裂变上架引擎**，通过飞书机器人（已部署于 Cloudflare Workers，24/7 全天候在线）实现全自动化业务闭环。
+开始时本地 `main` 与获取后的 `origin/main` 一致，基线提交 `7750a3e1d374258481170455d106724e0deb1ef1`，工作区无未提交修改。本轮直接编辑用户指定的共享目录，尚未提交、推送或部署。没有通过工具向 Antigravity 发消息；它可从本文件与工作区差异接续。
 
-### 已完成模块：
-1. **技能规约核心 (`SKILL.md`)**：
-   - 包含 10 维完全解耦的受众心智定位（极简居家、商务办公、差旅户外、节日礼盒、极客防护等）。
-   - 包含 10 组差异化生活化场景与光影指令（以原图为锚点，保持主体一致）。
-   - 批量数据导出器：`scripts/fission_exporter.py`，支持输出标准 WB 批量导入表格。
-2. **边缘端交互网关 (`cloudflare-worker/src/index.js`)**：
-   - 部署于 Cloudflare Workers，绑定全球加速域名 `https://wb-bot.diytale.com/`。
-   - 接入飞书开放平台 Webhook (`im.message.receive_v1`)，免审极速发布至 v1.0.1。
-   - 绑定 Cloudflare KV (`WB_FISSION_KV`)，实现用户 Token 与商品任务状态持久化存储。
-   - 支持直接识别 **纯数字货号 (Артикул / nmId)**、`SKU: xxx`、`货号: xxx` 以及完整详情页 URL。
-   - 支持 **多轮业务问答**（进度查询、FBS 跨境集运发货、打单贴标规范、多 Listing 矩阵运营与回款）。
-3. **私有仓库沉淀**：
-   - GitHub: `cnproduct/wildberries-listing-fissioner` (状态: `PRIVATE`)。
+### 当前已经实现
 
----
+- Skill 重构：事实锁定、按商品选场景、Codex/Antigravity 工具适配、原图一致性审查、交付状态边界。参考矩阵与合同单独放入 `references/`。
+- 导出器：草稿与严格模式；数量校验；拒绝非法包装数值；不补造事实、价格或条码；本地图像与文件格式检查；相对图片路径；工作簿文本按字面保存；避免覆盖旧输出；失败清理临时资产包。
+- 飞书 Worker：移除内置应用密钥；验证未加密事件的 Verification Token 和 app_id；不同消息对应不同请求记录；没有执行器时明确显示待执行；移除耗时推算进度、未验证授权成功和自动发布承诺。
+- 本地长连接：接收演示，不保存 Token、不记录消息正文、不谎报制作与发布。
+- 教学示例：明确虚构状态，撤去无证据的保温时长、防摔、低敏、礼盒和多件套宣称。
+- 离线验证：14 项 Python 测试、8 项 Worker 测试通过；Skill frontmatter 校验通过。测试使用临时文件和模拟 API。
 
-## 2. 待与 Codex 共同优化的核心方向 (Optimization Backlog)
+### 兼容性与上线条件
 
-请在 Codex 对话中重点针对以下 3 个深水区进行架构升级与代码补充：
+- 输出改为 `WB_Listing_Review_<SKU>.xlsx`，列名为规范字段、工作表为 `Listing_Review` 与 `QA_Issues`；旧版自定义表格没有被验证为 WB 官方模板。
+- manifest 为 schema v2；图片路径相对于资产包目录。
+- CLI `--sku` 必填，默认十项，可用 `--expected-count` 调整；旧函数入口保留。
+- 应用密钥改从受保护的环境配置读取。旧密钥需轮换；删除当前代码里的密钥不能撤销历史暴露。
+- Worker 还需 `FEISHU_VERIFICATION_TOKEN`；加密事件会拒绝，解密和签名验证待实现。
+- 不再接收聊天 Token 绑定。后续通过适当的私有配置接入店铺授权，并真实核验权限。
+- 本轮没有检查线上域名、飞书应用配置或 WB 店铺。旧文档曾描述 `wb-bot.diytale.com` 已部署，该历史描述不构成本轮在线验证。
 
-### 🎯 优化点 1：真机执行队列与异步调度打通 (Async Job Queue)
-* **现状**：目前 Cloudflare Edge Worker 完成了消息接收、参数核验与即时进度反馈，但尚未触发真正的 10 套图文生成与 WB API 直传。
-* **目标**：设计由 Cloudflare Worker 接收任务后触发后端执行器（例如通过 Webhook 唤起本地守护脚本、Cloudflare Queue 或轻量云主机任务）：
-  - 抓取目标商品规格与类目属性 (`card.wb.ru`)；
-  - 调用生图工具链以原图为基准批量重绘 10 张差异化主图；
-  - 自动将制作完成的状态与预览回推至飞书客户端。
+## 后续优化顺序
 
-### 🎯 优化点 2：Wildberries 官方 Content API 直传组包 (`cards/upload`)
-* **现状**：目前支持本地 Excel 导出，需补全通过 WB 官方 API 直接创建商品卡片的能力。
-* **目标**：完善直接组装 `POST https://content-api.wildberries.ru/content/v2/cards/upload` 规范 JSON 载荷（包含 `subjectId`, `vendorCode`, `characteristics`, `photos` 等字段），实现真正的一键免人工直传店铺后台。
+### 1. 接入真实生成执行器
 
-### 🎯 优化点 3：多商品任务并发与持久化队列锁
-* **现状**：单个用户仅存 `latest_task`，多商品连续提交易覆盖。
-* **目标**：在 KV 中将任务升级为任务列表队列 (`tasks:user_id = [...]`)，支持批量提交多个 SKU 逐一出单。
+先确认部署在哪个执行环境以及可用的图像工具。云端 Worker 不能直接调用 Codex/Antigravity 交互会话的原生工具。定义商品事实、任务、图文资产和错误的接口，再接抓取/资料补全、文案、图片、导出与结果通知。
 
----
+建议状态：`received → validating → generating_text → generating_images → reviewing → ready`，失败为 `failed`，资料不足为 `needs_input`。仅执行器实际完成步骤后更新状态。尚未接通时本轮使用 `waiting_executor`。不要发布无依据的完成时长。
 
-## 3. 本地与代码库快速映射
+### 2. 持久队列、重试与执行租约
 
-- **代码根目录**：`.agents/skills/wildberries-listing-fissioner`
-- **核心文件路径**：
-  - `SKILL.md`：10 维受众文案与生图控制核心规约
-  - `cloudflare-worker/src/index.js`：线上运行的飞书交互与网关逻辑
-  - `cloudflare-worker/wrangler.toml`：Cloudflare 环境变量与 KV 绑定配置
-  - `scripts/fission_exporter.py`：WB 批量导出表格处理脚本
+当前 KV 每条请求独立保存，避免多商品只剩一个任务；它仍不是消费队列。KV 不能提供原子锁或并发恰好一次处理。正式执行建议接入持久队列与事务存储，设计事件去重、任务租约、崩溃恢复、有限重试和失败记录。不要把“KV 数组读改写”当作并发安全队列。
+
+### 3. WB API 创建与媒体上传
+
+先做离线载荷构建和 dry run；实时读取类目及必填属性、确认店铺权限。根据官方当前规范创建卡片并查询结果，再按卡片标识上传媒体。图片不是任意添加在 `cards/upload` 的 `photos` 字段中。价格与库存单独处理。
+
+实际发布需用户给出目标店铺和发布范围。发生超时或未知结果时先查询是否已创建，不直接重发导致重复卡片。用店铺后台与媒体实际显示核验最终结果。
+
+## 协同约定
+
+进入本目录先读本文件、`SKILL.md` 和当前 Git 差异。按当轮任务划分文件，写入前检查目标文件是否已变化；若另一方已修改，基于最新内容合并。
+
+保留原有用户工作，不重置工作区，不自动部署服务。验证完成后在本文件记录真实结果与未闭合环节，便于另一方接续。

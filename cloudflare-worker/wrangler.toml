@@ -5,6 +5,7 @@ compatibility_date = "2024-09-23"
 [vars]
 FEISHU_APP_ID = "cli_aa42e84775381cfd"
 FEISHU_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
+FEISHU_VERIFICATION_TOKEN = "QdoDl12wOpeihgls3I3T6bsgfwtVwyZu"
 
 [[kv_namespaces]]
 binding = "WB_FISSION_KV"
