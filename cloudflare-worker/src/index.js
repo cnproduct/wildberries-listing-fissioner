@@ -1,6 +1,9 @@
 /**
- * Wildberries Listing Fissioner - Feishu Bot Cloudflare Worker
- * 部署于 Cloudflare Workers，全天候 24/7 响应飞书消息事件与 WB 裂变指令。
+ * Wildberries Listing Fissioner - 飞书机器人服务
+ * 严格执行商业化上架对话规范：
+ * 1. 仅围绕商品上架、店铺授权与所需资料进行引导与状态同步。
+ * 2. 严禁透露底层实现、系统架构、云平台及生图工具等内部技术细节。
+ * 3. 客户询问实现原理时，统一回复标准话术。
  */
 
 const DEFAULT_APP_ID = "cli_aa42e84775381cfd";
@@ -37,7 +40,6 @@ async function sendFeishuReply(token, messageId, chatId, text) {
   });
   const data = await res.json();
   if (data.code !== 0 && chatId) {
-    console.warn("Reply failed, falling back to createMessage with chatId:", data);
     await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
       method: "POST",
       headers: {
@@ -58,7 +60,7 @@ async function handleFeishuEvent(eventPayload, env) {
   if (!event || !event.message) return;
 
   const sender = event.sender || {};
-  if (sender.sender_type === "app") return; // 忽略应用机器人自身发出的消息
+  if (sender.sender_type === "app") return;
 
   const message = event.message;
   let textContent = "";
@@ -81,7 +83,18 @@ async function handleFeishuEvent(eventPayload, env) {
   const cleanText = textContent.trim();
   const lowerText = cleanText.toLowerCase();
 
-  // 1. 识别绑定或更新 API 令牌指令
+  // 1. 拦截实现原理、架构、生图工具等内部技术询问
+  const techKeywords = [
+    "原理", "怎么实现", "如何实现", "什么模型", "架构", "源码", "代码", "提示词", "prompt",
+    "技术", "cloudflare", "antigravity", "生图工具", "comfyui", "脚本", "接口字段", "内部规则"
+  ];
+  if (techKeywords.some(kw => lowerText.includes(kw))) {
+    const reply = "这部分属于内部实现资料，无法在客户对话中提供。我可以介绍可用功能、所需资料，或帮您查看上架结果。";
+    await sendFeishuReply(token, messageId, chatId, reply);
+    return;
+  }
+
+  // 2. 识别绑定或更新 API 令牌指令
   let isTokenInput = false;
   let newToken = "";
   if (lowerText.startsWith("绑定api:") || lowerText.startsWith("绑定api：") || lowerText.startsWith("api:")) {
@@ -94,63 +107,52 @@ async function handleFeishuEvent(eventPayload, env) {
   }
 
   if (isTokenInput && newToken) {
-    const reply = "✅ **您的 Wildberries 店铺 API 接口已成功接入！**\n\n" +
-      "• 授权状态：已绑定\n" +
-      "• 接口权限：Контент (商品/Content) 直传\n\n" +
-      "📦 **下一步**：请直接发送您想裂变的 **Wildberries 商品链接**（如 https://www.wildberries.ru/catalog/.../detail.aspx），系统将自动为您裂变 10 套去重 Listing 并通过 API 直接发布到您的 WB 店铺后台！";
+    const reply = "✅ **您的 Wildberries 店铺已成功连接！**\n\n" +
+      "• 店铺状态：授权有效\n" +
+      "• 权限范围：商品卡片创建与更新\n\n" +
+      "📦 **下一步**：请直接发送您想上架的 **Wildberries 商品链接**（如 https://www.wildberries.ru/catalog/.../detail.aspx），系统将为您生成 10 套独立商品卡片并同步至您的 WB 卖家后台。";
     await sendFeishuReply(token, messageId, chatId, reply);
     return;
   }
 
-  // 2. 用户询问如何发布、账号、API 或需要提供什么资料
-  const publishKeywords = ["如何发布", "怎么发布", "发布到", "wb账号", "提供什么", "资料", "api", "接口", "授权", "怎么用", "上架", "帮助", "help"];
+  // 3. 用户询问如何上架、提供什么资料
+  const publishKeywords = ["如何发布", "怎么发布", "如何上架", "怎么上架", "上架", "发布到", "wb账号", "提供什么", "资料", "api", "接口", "授权", "怎么用", "帮助", "help"];
   if (publishKeywords.some(kw => lowerText.includes(kw))) {
-    const reply = "💡 **如何发布到您的 Wildberries 账号？**\n\n" +
-      "系统通过 **Wildberries 官方 API 接口** 直连您的店铺，裂变完成的 10 套 Listing 将直接同步至您的卖家后台。\n\n" +
-      "📋 **您只需提供以下资料即可：**\n" +
-      "👉 **提供您的 WB 店铺 API 令牌 (API Token)**\n" +
-      "• **获取路径**：登录 WB 卖家后台 (seller.wildberries.ru) ➔ 点击右上角头像「Настройки (设置)」➔「Доступ к API (API 访问)」➔ 创建并复制一个带 **【Контент (Content/商品)】** 权限的 Token。\n" +
-      "• **提交方式**：直接在此发送：`绑定API: <您的Token>`（或直接粘贴 Token 字符串）。\n\n" +
-      "🔗 **绑定后如何使用？**\n" +
-      "绑定 API 后，直接将要裂变的 **WB 商品链接** 发送给我，系统将自动执行 10 维受众心智裂变，并直接通过接口推送到您的 WB 账号！";
+    const reply = "💡 **Wildberries 商品上架指南**\n\n" +
+      "完成商品上架只需以下两步：\n\n" +
+      "1️⃣ **第一步：提供 WB 店铺授权**\n" +
+      "• **获取路径**：登录 WB 卖家后台 (seller.wildberries.ru) ➔ 点击右上角头像「Настройки (设置)」➔「Доступ к API (API 访问)」➔ 创建带 **【Контент (商品/Content)】** 权限的 Token。\n" +
+      "• **提交方式**：直接在此发送 `绑定API: <您的Token>`。\n\n" +
+      "2️⃣ **第二步：发送要上架的商品链接**\n" +
+      "• 粘贴需要上架的 Wildberries 商品链接，系统将自动制作 10 套去重商品资料（独立俄语标题、详细描述及配套主图），并同步至您的店铺。";
     await sendFeishuReply(token, messageId, chatId, reply);
     return;
   }
 
-  // 3. 判断是否为 WB 链接或裂变指令
-  if (lowerText.includes("wildberries.ru") || lowerText.includes("wb.ru") || lowerText.startsWith("裂变")) {
-    const reply = "🚀 **【WB 1拆10 裂变引擎】任务已启动！**\n\n" +
-      "• 核心商品解构：提取材质、规格与功能形态\n" +
-      "• 10 维受众矩阵：正在生成居家、职场、露营、礼盒等 10 套去重俄语 SEO 标题与长文案\n" +
-      "• 原生生图引擎：正在以原图为锚点渲染 10 组差异化生活化主图\n" +
-      "• 平台同步：云端队列已就绪！如已绑定 API，裂变与图片渲染完成后将通过 Content API 直传至您的店铺后台；如未绑定，将导出标准 WB 批量上架表格。";
+  // 4. 判断是否为 WB 商品链接或上架指令
+  if (lowerText.includes("wildberries.ru") || lowerText.includes("wb.ru") || lowerText.startsWith("上架") || lowerText.startsWith("裂变")) {
+    const reply = "🚀 **商品上架任务已启动！**\n\n" +
+      "• 商品状态：已受理，正在核验原商品规格与类目属性\n" +
+      "• 上架制作：正在生成 10 套独立商品资料（俄语标题、属性参数、卖点描述与配套主图）\n" +
+      "• 店铺同步：制作完成后将自动同步至您的 WB 卖家后台（如未绑定 API，将为您输出标准上架表格）";
     await sendFeishuReply(token, messageId, chatId, reply);
     return;
   }
 
-  // 4. 默认通用响应与引导
-  const reply = "👋 收到你的消息：\"" + cleanText + "\"\n\n" +
-    "🤖 我是 **WB 1拆10 Listing 裂变助手**（已部署至 Cloudflare 24/7 全天候在线）。\n\n" +
-    "📌 **您只需提供两项资料即可开始使用：**\n" +
-    "1️⃣ **第一步：提供 WB 店铺 API 接口**（用于一键免人工自动发布）\n" +
-    "   • 直接发送：`绑定API: <您的WB_Token>`\n" +
-    "   • 从 WB 后台「Настройки」➔「Доступ к API」获取 Content 权限 Token；\n\n" +
-    "2️⃣ **第二步：发送要裂变的商品链接或原图**\n" +
-    "   • 粘贴 Wildberries 商品详情页 URL，系统将自动裂变 10 套去重资产并同步推送到您的 WB 账号！";
+  // 5. 默认通用响应与引导（仅谈上架相关）
+  const reply = "👋 您好！我是 **WB 商品上架助手**。\n\n" +
+    "📦 **快速开启上架只需提供：**\n" +
+    "1️⃣ **店铺 API 授权**：发送 `绑定API: <您的WB_Token>`（用于一键自动同步至卖家后台）\n" +
+    "2️⃣ **目标商品链接**：直接发送 Wildberries 商品链接，即可自动生成 10 套独立商品资料并安排上架！";
   await sendFeishuReply(token, messageId, chatId, reply);
 }
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // 健康检查与 GET
     if (request.method === "GET") {
       return new Response(JSON.stringify({
         status: "online",
-        service: "Wildberries Listing Fissioner Feishu Bot",
-        runtime: "Cloudflare Workers",
-        deployed_at: new URL(request.url).hostname
+        service: "Wildberries Listing Assistant"
       }), {
         headers: { "Content-Type": "application/json" }
       });
@@ -167,14 +169,12 @@ export default {
       return new Response("Invalid JSON", { status: 400 });
     }
 
-    // 1. 飞书 URL 校验 Challenge 握手
     if (body.type === "url_verification") {
       return new Response(JSON.stringify({ challenge: body.challenge }), {
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    // 2. 飞书事件推送
     if (body.header && body.header.event_type === "im.message.receive_v1") {
       ctx.waitUntil(handleFeishuEvent(body, env).catch(err => {
         console.error("Error processing Feishu event:", err);
