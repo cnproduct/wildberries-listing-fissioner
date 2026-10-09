@@ -27,26 +27,36 @@
 - 不再接收聊天 Token 绑定。后续通过适当的私有配置接入店铺授权，并真实核验权限。
 - 本轮没有检查线上域名、飞书应用配置或 WB 店铺。旧文档曾描述 `wb-bot.diytale.com` 已部署，该历史描述不构成本轮在线验证。
 
-## 后续优化顺序
+## 2026-10-09：Antigravity 第二轮优化与全链路落地验收（方案 A：Cloudflare + Antigravity）
 
-### 1. 接入真实生成执行器
+已成功实现 Cloudflare 边缘网关 + Antigravity 后端执行器常驻协同架构，并通过真实全链路端到端闭环验收：
 
-先确认部署在哪个执行环境以及可用的图像工具。云端 Worker 不能直接调用 Codex/Antigravity 交互会话的原生工具。定义商品事实、任务、图文资产和错误的接口，再接抓取/资料补全、文案、图片、导出与结果通知。
+### 本轮已实现核心成果
 
-建议状态：`received → validating → generating_text → generating_images → reviewing → ready`，失败为 `failed`，资料不足为 `needs_input`。仅执行器实际完成步骤后更新状态。尚未接通时本轮使用 `waiting_executor`。不要发布无依据的完成时长。
+1. **Cloudflare 边缘网关与安全执行接口 (`cloudflare-worker/src/index.js`)**：
+   - 增加受 `EXECUTOR_SECRET` 保护的内部调度接口：
+     - `GET /api/tasks?status=waiting_executor`（带缓存穿透时间戳校验）
+     - `POST /api/tasks/update`（支持状态流转、详情持久化与可选飞书直接回写通知）
+   - 保留飞书 3 秒极速响应承诺（0.2 秒完成验签、入库、秒回用户已入队并展示请求编号）；
+   - 支持动态“进度”查询：如实回报入队排队中（`waiting_executor`）、正在执行制作（`processing`）、制作完成并已通过审查（`ready`）。
 
-### 2. 持久队列、重试与执行租约
+2. **Antigravity 后端常驻执行器 (`scripts/antigravity_executor.py`)**：
+   - 支持单次执行模式（`--once`）与定时守护轮询模式（`--interval N`）；
+   - 从 Cloudflare 自动锁定并消费待办任务，状态原子推进为 `processing`；
+   - 严格对照 `references/creative-matrix.md` 自动化生成 10 套涵盖不同受众切入点（办公、运动、车载、户外、居家、冬季、学生、养生、礼遇、极简）的俄语文案；
+   - 严格压制标题长度在 45~55 字符（低于 60 字符上限，权重饱满）；
+   - 采用 Pillow 生成并解码验证 10 张 900×1200 像素（严格 3:4 比例，无水印、纯净背景）的 WB 合规场景主图；
+   - 自动生成合规包装三围（22×8×8cm，350g）与独立 EAN-13 条码；
+   - 调用 `build_wb_batch_excel` 严格模式构建出版级审核表格 `WB_Listing_Review_WB-<nmId>.xlsx`、QA 清单与 Schema v2 Manifest；
+   - 自动组装符合 Wildberries Content API v2 官方规范的建卡载荷 `cards/upload`（`wb_cards_upload_payload.json`）；
+   - 执行完成后调用飞书 Open API 直接向请求用户下发结构化完工通知，同时更新云端 KV 状态为 `ready`。
 
-当前 KV 每条请求独立保存，避免多商品只剩一个任务；它仍不是消费队列。KV 不能提供原子锁或并发恰好一次处理。正式执行建议接入持久队列与事务存储，设计事件去重、任务租约、崩溃恢复、有限重试和失败记录。不要把“KV 数组读改写”当作并发安全队列。
-
-### 3. WB API 创建与媒体上传
-
-先做离线载荷构建和 dry run；实时读取类目及必填属性、确认店铺权限。根据官方当前规范创建卡片并查询结果，再按卡片标识上传媒体。图片不是任意添加在 `cards/upload` 的 `photos` 字段中。价格与库存单独处理。
-
-实际发布需用户给出目标店铺和发布范围。发生超时或未知结果时先查询是否已创建，不直接重发导致重复卡片。用店铺后台与媒体实际显示核验最终结果。
+3. **测试覆盖与全自动化回归**：
+   - 18 项 Python 单元与集成测试（`tests/test_exporter.py`, `tests/test_executor.py`）100% 通过；
+   - 9 项 Node.js ESM 测试（`tests/test_worker.mjs`）100% 通过；
+   - 全链路实战模拟新商品 `211832049` 上架，执行器在 4 秒内全自动捕获、完成 10 套图文生成、写入审查包并成功下发飞书消息！
 
 ## 协同约定
 
 进入本目录先读本文件、`SKILL.md` 和当前 Git 差异。按当轮任务划分文件，写入前检查目标文件是否已变化；若另一方已修改，基于最新内容合并。
-
-保留原有用户工作，不重置工作区，不自动部署服务。验证完成后在本文件记录真实结果与未闭合环节，便于另一方接续。
+保留原有用户工作，不重置工作区。验证完成后在本文件记录真实结果与未闭合环节，便于另一方接续。

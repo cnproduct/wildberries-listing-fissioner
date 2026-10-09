@@ -5,6 +5,7 @@ __pycache__/
 
 # Output and build files
 output/
+out/
 dist/
 build/
 *.egg-info/

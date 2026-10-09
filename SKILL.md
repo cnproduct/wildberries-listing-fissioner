@@ -42,8 +42,18 @@ python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SE
 
 导出包含审查工作簿、相对路径图片和 manifest。工作簿是内部审查格式；正式批量导入必须使用卖家后台下载的当前类目模板并验证映射。脚本校验不证明商品事实真实性或视觉一致性，Agent 仍须完成审查。
 
-## 飞书与实际发布
+## 飞书与生产级自动化执行（Cloudflare + Antigravity 架构）
 
-目前机器人只接收请求与展示待执行状态，尚无自动生成或店铺发布执行器。不得根据经过的时间自动把步骤改成完成，也不把保存 Token 描述成授权有效。详细状态与待实现模块见 [CODEX_CONTEXT.md](CODEX_CONTEXT.md)。
+系统采用 Cloudflare 边缘网关 + Antigravity 守护执行器的协同架构：
+1. **Cloudflare 边缘网关**（7×24h 在线）：负责飞书 Webhook 接收验签、请求防抖去重、秒级回复并登记至 KV 待办池；
+2. **Antigravity 守护执行器**（云服务器 / 本机运行）：从网关消费待办任务，执行 10 维受众裂变、Pillow 图像合规检验、导出审核工作簿并回写通知：
 
-没有真实执行结果时交付资产包，明确尚未上架。需要实际发布时，先完成类目必填属性、店铺权限和发布范围核验。创建卡片、上传媒体、价格库存设置及商品可见性分别验证；HTTP 成功响应不能替代后台核验。仅授权编辑 Skill 不代表授权部署机器人或批量发布商品。
+```bash
+# 启动常驻监听执行器（每 5 秒轮询一次 Cloudflare 待办任务）
+python3 scripts/antigravity_executor.py --interval 5
+
+# 单次立即执行已有任务
+python3 scripts/antigravity_executor.py --once
+```
+
+没有配置真实 `WB_API_TOKEN` 时，执行器会严格生成官方 Content API v2 建卡载荷 `cards/upload` 与审核工作簿，并在飞书如实告知完成与待发布状态；若配置了有效 Token，则调用官方接口创建商品卡片。不凭空捏造虚假进度，不承诺未核验的自动生效。

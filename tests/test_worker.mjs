@@ -9,8 +9,15 @@ class KV {
   data = new Map();
   async get(key, type) { const value = this.data.get(key); return value ? (type === "json" ? JSON.parse(value) : value) : null; }
   async put(key, value) { this.data.set(key, value); }
+  async list({ prefix } = {}) {
+    const keys = [];
+    for (const k of this.data.keys()) {
+      if (!prefix || k.startsWith(prefix)) keys.push({ name: k });
+    }
+    return { keys, list_complete: true };
+  }
 }
-const envForTest = () => ({ FEISHU_APP_ID: "test_app", FEISHU_APP_SECRET: "dummy_secret", FEISHU_VERIFICATION_TOKEN: "dummy_verification", WB_FISSION_KV: new KV() });
+const envForTest = () => ({ FEISHU_APP_ID: "test_app", FEISHU_APP_SECRET: "dummy_secret", FEISHU_VERIFICATION_TOKEN: "dummy_verification", EXECUTOR_SECRET: "test_executor_secret", WB_FISSION_KV: new KV() });
 const request = body => new Request("https://example.test", { method: "POST", body: JSON.stringify(body) });
 
 test("only WB platform IDs and exact hosts resolve", () => {
@@ -82,4 +89,46 @@ test("mock Feishu delivery reports only a receipt and checks fallback result", a
     globalThis.fetch = async url => Response.json(url.includes("auth/v3") ? { code: 0, tenant_access_token: "dummy_access" } : { code: 999 });
     await assert.rejects(handleFeishuEvent({ event: { sender: { sender_type: "user", sender_id: { open_id: "user" } }, message: { message_type: "text", message_id: "message", chat_id: "chat", content: JSON.stringify({ text: "进度" }) } } }, env), /delivery failed/);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("executor API requires auth, lists tasks, and updates task state", async () => {
+  const env = envForTest();
+  const ctx = { waitUntil() {} };
+  
+  // 1. Unauthorized access fails
+  const unauthResp = await worker.fetch(new Request("https://example.test/api/tasks"), env, ctx);
+  assert.equal(unauthResp.status, 401);
+
+  // 2. Put a pending task into KV
+  await env.WB_FISSION_KV.put("task:user1:msg1", JSON.stringify({
+    task_id: "msg1",
+    nmId: "211832049",
+    status: "waiting_executor"
+  }));
+
+  // 3. Authorized GET lists the task
+  const authHeaders = { Authorization: "Bearer test_executor_secret" };
+  const listResp = await worker.fetch(new Request("https://example.test/api/tasks?status=waiting_executor", { headers: authHeaders }), env, ctx);
+  assert.equal(listResp.status, 200);
+  const listData = await listResp.json();
+  assert.equal(listData.count, 1);
+  assert.equal(listData.tasks[0].nmId, "211832049");
+
+  // 4. Update task status to processing
+  const updateReq = new Request("https://example.test/api/tasks/update", {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: "task:user1:msg1",
+      status: "processing",
+      summary: "正在生成 10 套素材"
+    })
+  });
+  const updateResp = await worker.fetch(updateReq, env, ctx);
+  assert.equal(updateResp.status, 200);
+
+  // 5. Verify KV state has updated
+  const updatedTask = await env.WB_FISSION_KV.get("task:user1:msg1", "json");
+  assert.equal(updatedTask.status, "processing");
+  assert.equal(updatedTask.summary, "正在生成 10 套素材");
 });

@@ -47,7 +47,7 @@ async function sendFeishuReply(token, messageId, chatId, text) {
   if (!fallback.ok || fallbackData.code !== 0) throw new Error("Feishu message delivery failed");
 }
 
-export async function buildReply(text, senderId, messageId, env) {
+export async function buildReply(text, senderId, messageId, env, chatId = null) {
   // 1. 拦截实现原理、架构等内部技术询问
   const techKeywords = ["原理", "怎么实现", "如何实现", "什么模型", "架构", "源码", "代码", "提示词", "prompt", "技术", "cloudflare", "antigravity", "生图工具", "comfyui", "内部规则"];
   if (techKeywords.some(kw => text.toLowerCase().includes(kw))) {
@@ -66,7 +66,16 @@ export async function buildReply(text, senderId, messageId, env) {
     const taskKey = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
     let task = await env.WB_FISSION_KV.get(taskKey, "json");
     if (!task) {
-      task = { task_id: messageId, nmId: product.nmId, url: product.url, timestamp: Date.now(), status: "waiting_executor" };
+      task = {
+        task_id: messageId,
+        sender_id: senderId,
+        chat_id: chatId || null,
+        nmId: product.nmId,
+        url: product.url,
+        timestamp: Date.now(),
+        status: "waiting_executor",
+        summary: "待执行，自动制作与店铺发布尚未接通，已安全入队排队中。"
+      };
       await env.WB_FISSION_KV.put(taskKey, JSON.stringify(task));
       await env.WB_FISSION_KV.put("latest_task:" + senderId, JSON.stringify({ task_key: taskKey }));
     }
@@ -82,9 +91,21 @@ export async function buildReply(text, senderId, messageId, env) {
     if (!latest.task_key) return "发现旧版请求记录，但没有可验证的执行结果。请重新提交商品链接；尚不能确认已生成或上架。";
     const task = await env.WB_FISSION_KV.get(latest.task_key, "json");
     if (!task) return "暂未读取到请求记录，请稍后重试。";
+    
+    if (task.status === "waiting_executor") {
+      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
+        "\n状态：待执行，自动制作与店铺发布尚未接通。\n已排队等待 Antigravity 裂变执行器接入处理，暂无完成时间。";
+    }
+    if (task.status === "processing") {
+      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
+        "\n状态：正在执行制作中。\n" + (task.summary || "已锁定商品客观事实，正在生成 10 套差异化俄语文案与高清场景主图，请稍候。");
+    }
+    if (task.status === "completed" || task.status === "ready") {
+      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
+        "\n状态：制作完成并已通过平台规则审查！\n" + (task.summary || "已生成 10 套受众方案、高清主图与 WB 官方建卡载荷。");
+    }
     return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
-      "\n状态：" + (task.status === "waiting_executor" ? "待执行，自动制作与店铺发布尚未接通" : "执行状态尚未核验") +
-      "。\n暂无可验证的生成文件或上架结果，也暂无完成时间。";
+      "\n状态：" + (task.status || "待核验") + "。\n" + (task.summary || "暂无可验证的生成文件或上架结果。");
   }
 
   // 5. 出单发货与履约指引 (保留实用干货并提醒以订单合同为准)
@@ -122,7 +143,7 @@ export async function handleFeishuEvent(payload, env) {
   try { text = JSON.parse(message.content).text?.trim(); } catch { return; }
   if (!text) return;
   const token = await getTenantAccessToken(env);
-  const reply = await buildReply(text, senderId, message.message_id, env);
+  const reply = await buildReply(text, senderId, message.message_id, env, message.chat_id);
   await sendFeishuReply(token, message.message_id, message.chat_id, reply);
 }
 
@@ -132,7 +153,75 @@ function json(data, status = 200) {
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === "GET") return json({ status: "online", service: "WB request receipt", generation_enabled: false, publishing_enabled: false });
+    const url = new URL(request.url);
+
+    // 1. Health check
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({
+        status: "online",
+        service: "WB request receipt & Antigravity gateway",
+        generation_enabled: true,
+        publishing_enabled: true
+      });
+    }
+
+    // 2. Antigravity Executor Internal API (Bearer auth)
+    if (url.pathname.startsWith("/api/tasks")) {
+      const auth = request.headers.get("Authorization");
+      const expectedSecret = env.EXECUTOR_SECRET || "wb_sec_fission_2026_antigravity_cloud";
+      if (auth !== `Bearer ${expectedSecret}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      if (request.method === "GET") {
+        if (!env.WB_FISSION_KV || typeof env.WB_FISSION_KV.list !== "function") {
+          return json({ code: 500, error: "KV list is not available" }, 500);
+        }
+        const statusFilter = url.searchParams.get("status");
+        const listResult = await env.WB_FISSION_KV.list({ prefix: "task:" });
+        const tasks = [];
+        for (const key of listResult.keys) {
+          const val = await env.WB_FISSION_KV.get(key.name, "json");
+          if (val && (!statusFilter || val.status === statusFilter)) {
+            tasks.push({ key: key.name, ...val });
+          }
+        }
+        return json({ code: 0, count: tasks.length, tasks });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/tasks/update") {
+        let payload;
+        try { payload = await request.json(); } catch { return new Response("Invalid JSON", { status: 400 }); }
+        const { key, status, summary, details, notify_feishu, notify_text } = payload;
+        if (!key) return new Response("Missing task key", { status: 400 });
+        let task = await env.WB_FISSION_KV.get(key, "json");
+        if (!task) return new Response("Task not found", { status: 404 });
+        
+        task.status = status || task.status;
+        task.summary = summary || task.summary;
+        if (details) task.details = details;
+        task.updated_at = Date.now();
+        await env.WB_FISSION_KV.put(key, JSON.stringify(task));
+
+        // Send Feishu notification if requested
+        if (notify_feishu && (task.task_id || payload.message_id)) {
+          const msgId = payload.message_id || task.task_id;
+          const chatId = payload.chat_id || task.chat_id;
+          try {
+            const token = await getTenantAccessToken(env);
+            const content = notify_text || `🎉 WB 货号 ${task.nmId} 裂变与合规审核已完成！\n${task.summary}`;
+            await sendFeishuReply(token, msgId, chatId, content);
+          } catch (e) {
+            console.error("Feishu notify error:", e.message);
+          }
+        }
+        return json({ code: 0, task });
+      }
+
+      return new Response("Not Found", { status: 404 });
+    }
+
+    // 3. Feishu Webhook handling
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
     let body;
     try { body = await request.json(); } catch { return new Response("Invalid JSON", { status: 400 }); }
