@@ -2,8 +2,9 @@
  * Wildberries Listing Fissioner - 飞书机器人服务
  * 严格执行商业化上架对话规范：
  * 1. 仅围绕商品上架、店铺授权与所需资料进行引导与状态同步。
- * 2. 严禁透露底层实现、系统架构、云平台及生图工具等内部技术细节。
- * 3. 客户询问实现原理时，统一回复标准话术。
+ * 2. 支持通过 Wildberries 商品链接、平台 SKU (Артикул / 货号) 或商品编码直接触发裂变上架。
+ * 3. 严禁透露底层实现、系统架构、云平台及生图工具等内部技术细节。
+ * 4. 客户询问实现原理时，统一回复标准话术。
  */
 
 const DEFAULT_APP_ID = "cli_aa42e84775381cfd";
@@ -110,40 +111,77 @@ async function handleFeishuEvent(eventPayload, env) {
     const reply = "✅ **您的 Wildberries 店铺已成功连接！**\n\n" +
       "• 店铺状态：授权有效\n" +
       "• 权限范围：商品卡片创建与更新\n\n" +
-      "📦 **下一步**：请直接发送您想上架的 **Wildberries 商品链接**（如 https://www.wildberries.ru/catalog/.../detail.aspx），系统将为您生成 10 套独立商品卡片并同步至您的 WB 卖家后台。";
+      "📦 **下一步**：请直接发送您想上架的 **Wildberries 商品链接** 或 **商品货号/SKU**（如 `211832049`），系统将为您生成 10 套独立商品卡片并同步至您的 WB 卖家后台。";
     await sendFeishuReply(token, messageId, chatId, reply);
     return;
   }
 
   // 3. 用户询问如何上架、提供什么资料
   const publishKeywords = ["如何发布", "怎么发布", "如何上架", "怎么上架", "上架", "发布到", "wb账号", "提供什么", "资料", "api", "接口", "授权", "怎么用", "帮助", "help"];
-  if (publishKeywords.some(kw => lowerText.includes(kw))) {
-    const reply = "💡 **Wildberries 商品上架指南**\n\n" +
-      "完成商品上架只需以下两步：\n\n" +
-      "1️⃣ **第一步：提供 WB 店铺授权**\n" +
-      "• **获取路径**：登录 WB 卖家后台 (seller.wildberries.ru) ➔ 点击右上角头像「Настройки (设置)」➔「Доступ к API (API 访问)」➔ 创建带 **【Контент (商品/Content)】** 权限的 Token。\n" +
-      "• **提交方式**：直接在此发送 `绑定API: <您的Token>`。\n\n" +
-      "2️⃣ **第二步：发送要上架的商品链接**\n" +
-      "• 粘贴需要上架的 Wildberries 商品链接，系统将自动制作 10 套去重商品资料（独立俄语标题、详细描述及配套主图），并同步至您的店铺。";
-    await sendFeishuReply(token, messageId, chatId, reply);
-    return;
+  const isHelpQuery = publishKeywords.some(kw => lowerText.includes(kw));
+
+  // 4. 识别 WB 商品编码 / SKU / Артикул / 条码
+  let detectedSku = "";
+  const skuPrefixMatch = cleanText.match(/(?:sku|货号|商品编码|商品编号|编码|артикул|articul|nmid|id|条码|条形码|barcode)[:：\s]+([0-9]{6,13})/i);
+  if (skuPrefixMatch) {
+    detectedSku = skuPrefixMatch[1];
+  } else if (/^[0-9]{6,12}$/.test(cleanText)) {
+    // 纯数字 6~12 位为标准 WB 平台 Артикул (nmId)
+    detectedSku = cleanText;
+  } else {
+    // 提取诸如 "上架 211832049" 或 "裂变 211832049" 里的数字编码
+    const actionMatch = cleanText.match(/(?:上架|裂变|发布)\s*[:：\s]*([0-9]{6,12})/);
+    if (actionMatch) {
+      detectedSku = actionMatch[1];
+    }
   }
 
-  // 4. 判断是否为 WB 商品链接或上架指令
-  if (lowerText.includes("wildberries.ru") || lowerText.includes("wb.ru") || lowerText.startsWith("上架") || lowerText.startsWith("裂变")) {
+  // 5. 如果识别到有效 SKU / 商品编码，直接启动上架任务
+  if (detectedSku) {
+    const wbProductUrl = `https://www.wildberries.ru/catalog/${detectedSku}/detail.aspx`;
     const reply = "🚀 **商品上架任务已启动！**\n\n" +
-      "• 商品状态：已受理，正在核验原商品规格与类目属性\n" +
-      "• 上架制作：正在生成 10 套独立商品资料（俄语标题、属性参数、卖点描述与配套主图）\n" +
+      `• 识别编码：WB 商品货号 (Артикул) **${detectedSku}**\n` +
+      `• 商品链接：${wbProductUrl}\n` +
+      "• 商品状态：已受理，正在核验原商品类目属性与规格参数\n" +
+      "• 上架制作：正在生成 10 套独立去重商品资料（俄语标题、属性参数、卖点描述与配套主图）\n" +
       "• 店铺同步：制作完成后将自动同步至您的 WB 卖家后台（如未绑定 API，将为您输出标准上架表格）";
     await sendFeishuReply(token, messageId, chatId, reply);
     return;
   }
 
-  // 5. 默认通用响应与引导（仅谈上架相关）
+  // 6. 判断是否为 WB 商品链接
+  if (lowerText.includes("wildberries.ru") || lowerText.includes("wb.ru")) {
+    const urlSkuMatch = cleanText.match(/catalog\/([0-9]{6,12})/);
+    const skuInfo = urlSkuMatch ? `• 识别编码：WB 商品货号 (Артикул) **${urlSkuMatch[1]}**\n` : "";
+    const reply = "🚀 **商品上架任务已启动！**\n\n" +
+      skuInfo +
+      "• 商品状态：已受理，正在核验原商品规格与类目属性\n" +
+      "• 上架制作：正在生成 10 套独立去重商品资料（俄语标题、属性参数、卖点描述与配套主图）\n" +
+      "• 店铺同步：制作完成后将自动同步至您的 WB 卖家后台（如未绑定 API，将为您输出标准上架表格）";
+    await sendFeishuReply(token, messageId, chatId, reply);
+    return;
+  }
+
+  // 7. 处理上架/资料询问
+  if (isHelpQuery) {
+    const reply = "💡 **Wildberries 商品上架指南**\n\n" +
+      "完成商品上架只需以下两步：\n\n" +
+      "1️⃣ **第一步：提供 WB 店铺授权**\n" +
+      "• **获取路径**：登录 WB 卖家后台 (seller.wildberries.ru) ➔ 点击右上角头像「Настройки (设置)」➔「Доступ к API (API 访问)」➔ 创建带 **【Контент (商品/Content)】** 权限的 Token。\n" +
+      "• **提交方式**：直接在此发送 `绑定API: <您的Token>`。\n\n" +
+      "2️⃣ **第二步：提供要上架的商品链接或商品编码**\n" +
+      "• **方式 A（商品链接）**：直接发送 Wildberries 商品详情页链接；\n" +
+      "• **方式 B（商品编码/SKU）**：直接发送 WB 平台商品货号（如 `211832049` 或 `SKU: 211832049`）；\n\n" +
+      "接收到商品后，系统将自动制作 10 套去重商品资料（独立俄语标题、详细描述及配套主图），并同步至您的店铺。";
+    await sendFeishuReply(token, messageId, chatId, reply);
+    return;
+  }
+
+  // 8. 默认通用响应与引导（仅谈上架相关，明确支持链接与SKU）
   const reply = "👋 您好！我是 **WB 商品上架助手**。\n\n" +
     "📦 **快速开启上架只需提供：**\n" +
     "1️⃣ **店铺 API 授权**：发送 `绑定API: <您的WB_Token>`（用于一键自动同步至卖家后台）\n" +
-    "2️⃣ **目标商品链接**：直接发送 Wildberries 商品链接，即可自动生成 10 套独立商品资料并安排上架！";
+    "2️⃣ **目标商品**：直接发送 **Wildberries 商品链接** 或 **商品编码/货号**（如 `211832049` 或 `SKU: 211832049`），即可自动生成 10 套独立商品资料并安排上架！";
   await sendFeishuReply(token, messageId, chatId, reply);
 }
 
