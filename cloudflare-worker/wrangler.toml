@@ -6,6 +6,10 @@ compatibility_date = "2024-09-23"
 FEISHU_APP_ID = "cli_aa42e84775381cfd"
 FEISHU_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
 
+[[kv_namespaces]]
+binding = "WB_FISSION_KV"
+id = "76603af5b96a4924a591ff25e3b9abb8"
+
 [[routes]]
 pattern = "wb-bot.diytale.com/*"
 custom_domain = true
