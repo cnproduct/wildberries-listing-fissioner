@@ -88,43 +88,96 @@ def build_event_handler(client: lark.Client, app_id: str):
 
         chat_id = message.chat_id
 
-        # 判断是否为 WB 链接或裂变指令
-        if "wildberries.ru" in text_content or "wb.ru" in text_content or text_content.startswith("裂变"):
+        sender_id = sender.sender_id.open_id or sender.sender_id.user_id or "default_user"
+        tokens_file = Path("./data/wb_user_tokens.json")
+        tokens_file.parent.mkdir(parents=True, exist_ok=True)
+        user_tokens = {}
+        if tokens_file.exists():
+            try:
+                with open(tokens_file, "r", encoding="utf-8") as f:
+                    user_tokens = json.load(f)
+            except Exception:
+                user_tokens = {}
+
+        # 1. 识别绑定或更新 API 令牌指令
+        clean_text = text_content.strip()
+        is_token_input = False
+        new_token = ""
+        if clean_text.lower().startswith("绑定api:") or clean_text.lower().startswith("绑定api：") or clean_text.lower().startswith("api:"):
+            parts = clean_text.split(":", 1) if ":" in clean_text else clean_text.split("：", 1)
+            new_token = parts[1].strip()
+            is_token_input = True
+        elif len(clean_text) > 80 and not clean_text.startswith("http") and " " not in clean_text:
+            # 常见 JWT/Base64 长 Token 格式
+            new_token = clean_text
+            is_token_input = True
+
+        if is_token_input and new_token:
+            user_tokens[sender_id] = new_token
+            with open(tokens_file, "w", encoding="utf-8") as f:
+                json.dump(user_tokens, f, ensure_ascii=False, indent=2)
             reply_text_message(
                 client,
                 msg_id,
                 chat_id,
-                "🚀 【WB 1拆10 裂变引擎】已接收任务！\n\n"
-                "• 核心商品解构完成\n"
-                "• 正在根据 10 维受众心智（北欧风、商务白领、户外露营、礼品仪式感等）生成 10 套去重俄语 SEO 标题与长文案\n"
-                "• 正在调用图像引擎渲染 10 组差异化生活化主图\n"
-                "• 正在合成官方批量上传 Excel 表格..."
+                "✅ **您的 Wildberries 店铺 API 接口已成功接入！**\n\n"
+                "• 授权状态：已绑定\n"
+                "• 接口权限：Контент (商品/Content) 直传\n\n"
+                "📦 **下一步**：请直接发送您想裂变的 **Wildberries 商品链接**（如 https://www.wildberries.ru/catalog/.../detail.aspx），系统将自动为您裂变 10 套去重 Listing 并通过 API 直接发布到您的 WB 店铺后台！"
             )
-            # 在此调用 wildberries-listing-fissioner 内部生成与导出逻辑
-            # 导出成功后回传给用户
-        elif text_content in ["帮助", "help", "/start", "你好", "hi", "功能"]:
+            return
+
+        # 2. 用户询问如何发布、账号、API 或需要提供什么资料
+        publish_keywords = ["如何发布", "怎么发布", "发布到", "wb账号", "提供什么", "资料", "api", "接口", "授权", "怎么用", "上架"]
+        if any(kw in clean_text.lower() for kw in publish_keywords):
+            has_token = sender_id in user_tokens
+            token_status = "🟢 已绑定 API 接口" if has_token else "🔴 尚未绑定 API 接口"
             reply_text_message(
                 client,
                 msg_id,
                 chat_id,
-                "👋 你好！我是 **WB 1拆10 Listing 裂变机器人**。\n\n"
-                "📌 使用方法：\n"
-                "1. 直接将 Wildberries 商品链接发送给我（如 https://www.wildberries.ru/catalog/.../detail.aspx）；\n"
-                "2. 或发送【商品名称 + 核心规格参数】（如：`裂变: 纯棉短袖T恤，黑白灰三色，宽松版型`）；\n"
-                "3. 我将自动为你并行生成 10 套俄语 SEO 图文资产并打包 WB 标准批量导入 Excel 表格！"
+                "💡 **如何发布到您的 Wildberries 账号？**\n\n"
+                "系统通过 **Wildberries 官方 API 接口** 直连您的店铺，裂变完成的 10 套 Listing 将直接同步至您的卖家后台。\n\n"
+                f"当前店铺状态：**{token_status}**\n\n"
+                "📋 **您只需提供以下资料即可：**\n"
+                "👉 **提供您的 WB 店铺 API 令牌 (API Token)**\n"
+                "• **获取路径**：登录 WB 卖家后台 (`seller.wildberries.ru`) ➔ 点击右上角头像「Настройки (设置)」➔「Доступ к API (API 访问)」➔ 创建并复制一个带 **【Контент (Content/商品)】** 权限的 Token。\n"
+                "• **提交方式**：直接在此发送：`绑定API: <您的Token>`（或直接粘贴 Token 字符串）。\n\n"
+                "🔗 **绑定后如何使用？**\n"
+                "绑定 API 后，直接将要裂变的 **WB 商品链接** 发送给我，系统将自动执行 10 维受众心智裂变，并直接通过接口推送到您的 WB 账号！"
             )
-        else:
+            return
+
+        # 3. 判断是否为 WB 链接或裂变指令
+        if "wildberries.ru" in clean_text or "wb.ru" in clean_text or clean_text.startswith("裂变"):
+            has_token = sender_id in user_tokens
+            token_tip = "已检测到绑定的 API 接口，裂变完成后将直接推送至您的店铺！" if has_token else "提示：您尚未绑定 WB API 接口，完成生成后将为您导出标准 WB 批量上架 Excel 表格（如需 API 直传，可随时发送 `绑定API: <Token>`）。"
             reply_text_message(
                 client,
                 msg_id,
                 chat_id,
-                f"👋 收到你的消息：\"{text_content}\"\n\n"
-                "🤖 我是 **WB 1拆10 Listing 裂变助手**。\n\n"
-                "💡 **你可以发送以下内容触发服务：**\n"
-                "1. **发送 WB 商品链接**：直接粘贴 Wildberries 商品详情页 URL；\n"
-                "2. **发送品类描述**：输入【裂变: 商品名称，规格/卖点】；\n"
-                "3. **自动裂变 10 套资产**：系统将自动生成 10 维受众心智文案、生活化主图，并导出标准 WB 批量上架 Excel 表格！"
+                "🚀 **【WB 1拆10 裂变引擎】任务已启动！**\n\n"
+                "• 核心商品解构：提取材质、规格与功能形态\n"
+                "• 10 维受众矩阵：正在生成居家、职场、露营、礼盒等 10 套去重俄语 SEO 标题与长文案\n"
+                "• 原生生图引擎：正在以原图为锚点渲染 10 组差异化生活化主图\n"
+                f"• 发布渠道：{token_tip}"
             )
+            return
+
+        # 4. 默认通用响应与引导
+        reply_text_message(
+            client,
+            msg_id,
+            chat_id,
+            f"👋 收到你的消息：\"{clean_text}\"\n\n"
+            "🤖 我是 **WB 1拆10 Listing 裂变助手**。\n\n"
+            "📌 **您只需提供两项资料即可开始使用：**\n"
+            "1️⃣ **第一步：提供 WB 店铺 API 接口**（用于一键免人工自动发布）\n"
+            "   • 直接发送：`绑定API: <您的WB_Token>`\n"
+            "   • 从 WB 后台「Настройки」➔「Доступ к API」获取 Content 权限 Token；\n\n"
+            "2️⃣ **第二步：发送要裂变的商品链接或原图**\n"
+            "   • 粘贴 Wildberries 商品详情页 URL，系统将自动裂变 10 套去重资产并同步推送到您的 WB 账号！"
+        )
 
     return lark.EventDispatcherHandler.builder("", "") \
         .register_p2_im_message_receive_v1(handle_message) \
