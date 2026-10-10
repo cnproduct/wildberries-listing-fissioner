@@ -60,3 +60,27 @@
 
 进入本目录先读本文件、`SKILL.md` 和当前 Git 差异。按当轮任务划分文件，写入前检查目标文件是否已变化；若另一方已修改，基于最新内容合并。
 保留原有用户工作，不重置工作区。验证完成后在本文件记录真实结果与未闭合环节，便于另一方接续。
+
+## Muse 第三轮审计（2026-10-10）：WB Content API 直传修复
+
+**状态**：已合入 `scripts/wb_upload_fixed.py`（独立模块，不改现有执行器流程），commit 见本轮 Git 历史。
+
+**审计发现**（对照 WB Content API 官方规范，`scripts/antigravity_executor.py` 当前代码）：
+1. `dimensions` 用了 WB 不接受的 `isValid`，且缺 `weightBrutto`；
+2. `characteristics` 多了 `name` 字段，且 `value` 是裸字符串（应为数组）；
+3. `sizes` 里误放 `price`（价格应走 `discounts-prices-api`）；
+4. `subjectID: 607` 写死（仅适用于保温杯类目）；
+5. 未真正调用 `media/save` 上传 10 张图片；
+6. 条码为本地自造 EAN-13（未调 `/content/v2/barcodes`）；
+7. `cards/upload` 为异步建卡，原代码 POST 后直接宣称发布成功，未轮询取 `nmId`。
+
+**修复模块提供**（`scripts/wb_upload_fixed.py`）：
+- `construct_wb_cards_upload_payload()` 修正版（dimensions/characteristics/sizes 全合规）
+- `allocate_barcodes()` → `/content/v2/barcodes`
+- `wait_for_cards()` → 轮询建卡任务取真实 `nmId`
+- `upload_card_media()` → `media/save` 上传 10 张主图
+- `execute_upload()` → 端到端编排
+
+**待 Antigravity 接入**：在执行器 Step 6 调用 `execute_upload()`，动态传入 `subject_id` 与真实 `characteristics`，隔离 `generate_fission_variants()` 中的写死示例事实（材质/尺寸/重量），无 token 时只生成审核包、不虚报已发布。
+
+**硬约束**：所有 WB API 调用必须在固定出口 IP 的执行器机器上运行（WB 2026-10-06 白名单要求），Cloudflare Worker 不得直调 WB API。
