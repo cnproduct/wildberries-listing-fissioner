@@ -1,9 +1,15 @@
-/**
- * Feishu receipt gateway. Generation and WB publishing executors are not connected.
- * KV stores separate requests, but does not provide an atomic queue or execution lock.
- */
-const DEFAULT_APP_ID = "cli_aa42e84775381cfd";
+import { TaskCoordinator } from "./task-coordinator.js";
+export { TaskCoordinator };
 
+const DEFAULT_APP_ID = "cli_aa42e84775381cfd";
+const j = (data, status = 200) => Response.json(data, { status });
+export async function coordinate(env, path, body) {
+  if (!env.TASK_COORDINATOR) throw new Error("Task coordinator is not configured");
+  const stub = env.TASK_COORDINATOR.get(env.TASK_COORDINATOR.idFromName("wb-fission"));
+  return stub.fetch(new Request("https://coordinator" + path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  }));
+}
 export function resolveProduct(text) {
   const urlText = text.match(/https?:\/\/[^\s<>]+/i)?.[0];
   if (urlText) {
@@ -11,17 +17,18 @@ export function resolveProduct(text) {
       const url = new URL(urlText);
       if (!["wildberries.ru", "www.wildberries.ru", "wb.ru", "www.wb.ru"].includes(url.hostname) || url.username || url.password) return null;
       const match = url.pathname.match(/^\/catalog\/([0-9]{1,13})\/detail\.aspx\/?$/i);
-      if (!match) return null;
-      return { nmId: match[1], url: "https://www.wildberries.ru/catalog/" + match[1] + "/detail.aspx" };
+      return match ? { nmId: match[1], url: "https://www.wildberries.ru/catalog/" + match[1] + "/detail.aspx" } : null;
     } catch { return null; }
   }
-  // Seller SKU and barcode are not WB platform identifiers.
-  const match = text.match(/^(?:(?:货号|артикул|articul|nmid)\s*[:：]?\s*|(?:裂变|上架)\s*[:：]?\s*)?([0-9]{6,13})$/i);
-  return match ? { nmId: match[1], url: "https://www.wildberries.ru/catalog/" + match[1] + "/detail.aspx" } : null;
+  if (/^(?:sku|条形码|barcode|商品编码)\s*[:：]/i.test(text)) return null;
+  const ids = [...text.matchAll(/(?:货号|артикул|articul|nmid)\s*[:：]?\s*([0-9]{6,13})(?![0-9])/gi)].map(m => m[1]);
+  const raw = text.match(/^(?:(?:裂变|上架|生成)\s*[:：]?\s*)?([0-9]{6,13})$/);
+  if (raw) ids.push(raw[1]);
+  const unique = [...new Set(ids)];
+  return unique.length === 1 ? { nmId: unique[0], url: "https://www.wildberries.ru/catalog/" + unique[0] + "/detail.aspx" } : null;
 }
-
 async function getTenantAccessToken(env) {
-  if (!env.FEISHU_APP_SECRET) throw new Error("FEISHU_APP_SECRET is not configured");
+  if (!env.FEISHU_APP_SECRET) throw new Error("Feishu secret missing");
   const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ app_id: env.FEISHU_APP_ID || DEFAULT_APP_ID, app_secret: env.FEISHU_APP_SECRET })
@@ -30,7 +37,6 @@ async function getTenantAccessToken(env) {
   if (!response.ok || data.code !== 0 || !data.tenant_access_token) throw new Error("Feishu authentication failed");
   return data.tenant_access_token;
 }
-
 async function sendFeishuReply(token, messageId, chatId, text) {
   const headers = { Authorization: "Bearer " + token, "Content-Type": "application/json" };
   const content = JSON.stringify({ text });
@@ -46,201 +52,241 @@ async function sendFeishuReply(token, messageId, chatId, text) {
   const fallbackData = await fallback.json();
   if (!fallback.ok || fallbackData.code !== 0) throw new Error("Feishu message delivery failed");
 }
+async function health(env) { return (await coordinate(env, "/health")).json(); }
 
 export async function buildReply(text, senderId, messageId, env, chatId = null) {
-  // 1. 拦截实现原理、架构等内部技术询问
-  const techKeywords = ["原理", "怎么实现", "如何实现", "什么模型", "架构", "源码", "代码", "提示词", "prompt", "技术", "cloudflare", "antigravity", "生图工具", "comfyui", "内部规则"];
-  if (techKeywords.some(kw => text.toLowerCase().includes(kw))) {
-    return "这部分属于内部实现资料，无法在客户对话中提供。我可以介绍可用功能、所需资料，或帮您查看上架结果。";
-  }
+  const hasTokenMatch = text.match(/(?:API令牌|api_token|token|令牌)\s*[:：]\s*([^\s]+)/i) ||
+    text.match(/^(?:绑定api|api)\s*[:：]\s*([^\s]+)/i) ||
+    (text.length > 80 && !/\s/.test(text) && !/^https?:/i.test(text) && !/^资料\s*[:：]/.test(text) ? [null, text] : null);
+  const hasShopMatch = text.match(/(?:店铺名|店铺|shop)\s*[:：]\s*([^\s]+)/i);
+  const hasWarehouseMatch = text.match(/(?:仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*([^\s]+)/i);
 
-  // 2. 拦截明文 API Token 避免日志泄露
-  if (/^(?:绑定api|api)\s*[:：]/i.test(text) || (text.length > 80 && !/\s/.test(text) && !/^https?:/i.test(text))) {
-    return "当前尚未开通店铺授权核验与直传，请勿在聊天中发送 API Token。本次没有保存令牌，也没有验证店铺权限。";
+  if (hasTokenMatch || hasShopMatch || hasWarehouseMatch) {
+    const creds = {};
+    if (hasTokenMatch) creds.api_token = hasTokenMatch[1].trim();
+    if (hasShopMatch) creds.shop_name = hasShopMatch[1].trim();
+    if (hasWarehouseMatch) creds.warehouse_id = hasWarehouseMatch[1].trim();
+    await coordinate(env, "/credentials", { sender_id: senderId, credentials: creds });
+    let replyText = "已成功记录并落盘店铺凭据：\n";
+    if (creds.shop_name) replyText += "• 店铺名称：" + creds.shop_name + "\n";
+    if (creds.warehouse_id) replyText += "• 发货仓库：" + creds.warehouse_id + "\n";
+    if (creds.api_token) replyText += "• WB API 令牌：已成功落盘存储\n";
+    replyText += "后续生成的商品将自动关联此店铺凭据执行上架。";
+    return replyText;
   }
-
-  // 3. 商品解析与请求记录
+  if (/^资料\s*[:：]/.test(text)) {
+    let facts;
+    try { facts = JSON.parse(text.replace(/^资料\s*[:：]\s*/, "")); } catch { return "资料格式无效。请发送“资料:”后附 JSON 格式的真实商品规格，或先发送原图。"; }
+    if (!facts || typeof facts !== "object" || Array.isArray(facts)) return "商品资料必须是 JSON 对象。";
+    // Image resource references come only from signed image events, never user JSON.
+    delete facts.source_images; delete facts.source_image_key; delete facts.source_image_message_id;
+    const response = await coordinate(env, "/input", { sender_id: senderId, facts });
+    return response.ok ? "已保存补充资料，系统会重新核验并继续处理。尚未确认上架。" : "暂不能补充资料，请先提交商品链接，或等待当前处理结束。";
+  }
+  if (/^(?:重试|继续制作|重新发送|retry)$/i.test(text)) {
+    const latest = await (await coordinate(env,"/latest?sender=" + encodeURIComponent(senderId))).json();
+    if (!latest.key) return "请先发送一个 WB 商品链接。";
+    const resumed = await coordinate(env,"/retry",{key:latest.key});
+    return resumed.ok ? "已恢复该商品请求，已有通过检查的图片会继续使用，完成后回传本聊天。" : "当前请求正在执行，可发送“进度”查看。";
+  }
   const product = resolveProduct(text);
   if (product) {
-    if (!env.WB_FISSION_KV) return "已识别 WB 货号 " + product.nmId + "，但请求保存服务未配置，请稍后重试。尚未开始生成或发布。";
-    const taskKey = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
-    let task = await env.WB_FISSION_KV.get(taskKey, "json");
-    if (!task) {
-      task = {
-        task_id: messageId,
-        sender_id: senderId,
-        chat_id: chatId || null,
-        nmId: product.nmId,
-        url: product.url,
-        timestamp: Date.now(),
-        status: "waiting_executor",
-        summary: "待执行，自动制作与店铺发布尚未接通，已安全入队排队中。"
-      };
-      await env.WB_FISSION_KV.put(taskKey, JSON.stringify(task));
-      await env.WB_FISSION_KV.put("latest_task:" + senderId, JSON.stringify({ task_key: taskKey }));
-    }
-    return "已记录商品请求：WB 货号 " + task.nmId + "\n商品链接：" + task.url +
-      "\n请求编号：" + task.task_id + "\n当前状态：待执行。自动制作与店铺发布尚未接通，暂无完成时间。可发送“进度”查看最近请求。";
+    const key = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
+    const response = await coordinate(env, "/put", { key, task: { task_id: messageId, sender_id: senderId, chat_id: chatId, mode: "creative", ...product } });
+    if (!response.ok) throw new Error("Task persistence failed");
+    const h = await health(env);
+    return "已记录商品请求：WB 货号 " + product.nmId + "\n请求编号：" + messageId +
+      "\n当前状态：" + (h.online ? "等待处理，执行服务在线。" : "等待处理，执行服务暂时离线；恢复后会继续处理。") +
+      "\n系统会自动读取原图和商品信息，制作10种应用场景的图片、俄语标题和描述，完成后回传本聊天。可发送“进度”查看。";
   }
-
-  // 4. 进度查询
   if (/(进度|多久|完成了吗|好了吗|有在执行吗|在做吗|开始了吗|状态|排队|完成了没)/.test(text)) {
-    if (!env.WB_FISSION_KV) return "请求保存服务未配置，无法查询进度。尚未开始自动生成或发布。";
-    const latest = await env.WB_FISSION_KV.get("latest_task:" + senderId, "json");
-    if (!latest) return "尚未找到您的商品请求，请发送 WB 详情页链接或平台货号。";
-    if (!latest.task_key) return "发现旧版请求记录，但没有可验证的执行结果。请重新提交商品链接；尚不能确认已生成或上架。";
-    const task = await env.WB_FISSION_KV.get(latest.task_key, "json");
-    if (!task) return "暂未读取到请求记录，请稍后重试。";
-    
+    const { task } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId))).json();
+    if (!task) return "尚未找到您的商品请求，请发送 WB 商品详情链接或平台货号。";
+    const prefix = "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id + "\n";
     if (task.status === "waiting_executor") {
-      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
-        "\n状态：待执行，自动制作与店铺发布尚未接通。\n已排队等待 Antigravity 裂变执行器接入处理，暂无完成时间。";
+      const h = await health(env);
+      return prefix + (h.online ? "状态：等待处理，执行服务在线。" : "状态：执行服务暂时离线，请求已保存，恢复后继续。") + "\n尚未确认生成或上架。";
     }
-    if (task.status === "processing") {
-      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
-        "\n状态：正在执行制作中。\n" + (task.summary || "已锁定商品客观事实，正在生成 10 套差异化俄语文案与高清场景主图，请稍候。");
-    }
-    if (task.status === "completed" || task.status === "ready") {
-      return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
-        "\n状态：制作完成并已通过平台规则审查！\n" + (task.summary || "已生成 10 套受众方案、高清主图与 WB 官方建卡载荷。");
-    }
-    return "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id +
-      "\n状态：" + (task.status || "待核验") + "。\n" + (task.summary || "暂无可验证的生成文件或上架结果。");
+    const labels = { validating: "资料核验中", processing: "处理中", generating_text: "文案制作中", generating_images: "图片制作中", reviewing: "审查中",
+      needs_input: "需要补充资料", awaiting_delivery: "图文已生成，等待飞书交付", failed: "处理失败，需检查", ready: "资产包已生成，尚未上架", cancelled: "已取消" };
+    return prefix + "状态：" + (labels[task.status] || "待核验") + "。\n" + (task.summary || "");
   }
-
-  // 5. 出单发货与履约指引 (保留实用干货并提醒以订单合同为准)
-  if (/(发货|出单|打单|物流|集运|贴标|条码|fbs|fbo|fbw|运费)/i.test(text)) {
-    return "📦 **Wildberries 履约发货实操指引 (FBS 跨境集运)**\n\n" +
-      "1️⃣ **出单确认**：在卖家后台「Сборочные задания」接单并生成拣货任务。\n" +
-      "2️⃣ **打印标签**：单个内包装贴商品条码标签 (Штрихкод 58×40mm)，外箱贴订单 QR 扫描码。\n" +
-      "3️⃣ **集运交接**：寄往官方认证国内集运仓（东莞/义乌/深圳等），扫码入库即履约成功。\n\n" +
-      "💡 交付地址、标签格式、时限（通常 72~120h）和履约完成条件请以具体订单与合同核验；请勿把商品条码当作 WB 平台货号。";
-  }
-
-  // 6. 运营与结算建议
-  if (/(运营|排名|权重|定价|改价|活动|促销|回款|提现|结算|退货|销量|推广)/.test(text)) {
-    return "📈 **Wildberries 运营与结算建议**\n\n" +
-      "1️⃣ **多方案对比**：可比较不同文案与主图在曝光、点击率、加购率上的表现；差异化素材本身不承诺平台排名或销量。\n" +
-      "2️⃣ **提报官方活动**：在后台「Календарь акций」提报大促，获取活动加权。\n" +
-      "3️⃣ **回款账期**：以店铺后台与销售合同约定的结算周期为准，通过合规跨境渠道提现。";
-  }
-
-  // 7. 卖家 SKU 与条码区分提示
-  if (/^(?:sku|条形码|barcode|商品编码)\s*[:：]/i.test(text)) {
-    return "这是卖家 SKU 或条码，无法直接定位 WB 商品。请提供 WB 详情页链接或平台货号 nmId。";
-  }
-
-  // 8. 默认引导
-  return "我是 WB 商品资料助手。请发送 WB 商品详情链接或平台货号，并准备原图、真实规格与包装测量。\n目前可以记录商品请求、查询待执行状态；自动制作和店铺发布尚未接通。请勿发送 API Token。";
+  if (/^(?:sku|条形码|barcode|商品编码)\s*[:：]/i.test(text)) return "卖家 SKU 或条码不能直接定位 WB 商品，请提供平台货号 nmId 或详情链接。";
+  if (/(发货|出单|打单|物流|集运|贴标|条码|fbs|fbo|fbw|运费)/i.test(text)) return "发货地址、标签、时限与履约条件请按具体订单和店铺合同核验。请提供店铺市场、销售模式与后台发货要求。";
+  return "请发送一个 WB 商品链接或“WB 货号 123456789”。系统自动读取原图，生成10种同款产品的场景图片、俄语标题和描述，并回传飞书。可发送“进度”查看状态。";
 }
-
 export async function handleFeishuEvent(payload, env) {
   const { message, sender } = payload.event || {};
-  if (!message || sender?.sender_type === "app" || message.message_type !== "text") return;
+  if (!message || sender?.sender_type === "app") return;
   const senderId = sender?.sender_id?.open_id || sender?.sender_id?.user_id;
   if (!senderId || !message.message_id) return;
-  let text;
-  try { text = JSON.parse(message.content).text?.trim(); } catch { return; }
-  if (!text) return;
   const token = await getTenantAccessToken(env);
-  const reply = await buildReply(text, senderId, message.message_id, env, message.chat_id);
+  let content;
+  try { content = JSON.parse(message.content); } catch { return; }
+  let reply;
+  if (message.message_type === "text" && typeof content.text === "string") {
+    reply = await buildReply(content.text.trim(), senderId, message.message_id, env, message.chat_id);
+  } else if (message.message_type === "image" && typeof content.image_key === "string") {
+    const response = await coordinate(env, "/input", { sender_id: senderId, facts: { source_image_key: content.image_key, source_image_message_id: message.message_id } });
+    reply = response.ok ? "已收到商品原图，将继续制作10套场景图片与描述。" : "请先提交商品链接，或等待当前处理结束后再发送原图。";
+  } else return;
   await sendFeishuReply(token, message.message_id, message.chat_id, reply);
 }
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
-}
-
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(coordinate(env, "/recover").then(r => { if (!r.ok) throw new Error("Recovery failed"); }));
+  },
   async fetch(request, env, ctx) {
+    // Normalize new Secret bindings without preserving old plaintext config.
+    env = { ...env,
+      EXECUTOR_SECRET: env.EXECUTOR_SECRET_V2 || env.EXECUTOR_SECRET,
+      FEISHU_APP_SECRET: env.FEISHU_APP_SECRET_V2 || env.FEISHU_APP_SECRET,
+      FEISHU_VERIFICATION_TOKEN: env.FEISHU_VERIFICATION_TOKEN_V2 || env.FEISHU_VERIFICATION_TOKEN };
     const url = new URL(request.url);
-
-    // 1. Health check
-    if (request.method === "GET" && url.pathname === "/") {
-      return json({
-        status: "online",
-        service: "WB request receipt & Antigravity gateway",
-        generation_enabled: true,
-        publishing_enabled: true
+    if (url.pathname === "/" && request.method === "GET") {
+      let h;
+      try { h = await health(env); } catch { h = { online: false, capabilities: {}, counts: {} }; }
+      return j({ status: "online", service: "WB task gateway", queue_backend: "durable-object",
+        executor_online: h.online, executor_last_seen: h.last_seen || null,
+        generation_enabled: h.online && !!h.capabilities.generation, publishing_enabled: false,
+        task_counts: h.counts, version: "2026-10-10" });
+    }
+    if (url.pathname.startsWith("/media/") && request.method === "GET") {
+      const key = url.pathname.slice("/media/".length);
+      if (!env.WB_FISSION_KV) return j({ error: "KV not configured" }, 503);
+      const data = await env.WB_FISSION_KV.get("media:" + key, { type: "arrayBuffer" });
+      if (!data) return new Response("Not found", { status: 404 });
+      const ext = key.split(".").pop().toLowerCase();
+      const ct = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+      return new Response(data, {
+        headers: {
+          "Content-Type": ct,
+          "Cache-Control": "public, max-age=86400, s-maxage=86400"
+        }
       });
     }
-
-    // 2. Antigravity Executor Internal API (Bearer auth)
-    if (url.pathname.startsWith("/api/tasks")) {
-      const auth = request.headers.get("Authorization");
-      const expectedSecret = env.EXECUTOR_SECRET || "wb_sec_fission_2026_antigravity_cloud";
-      if (auth !== `Bearer ${expectedSecret}`) {
-        return new Response("Unauthorized", { status: 401 });
+    if (url.pathname.startsWith("/api/")) {
+      if (!env.EXECUTOR_SECRET) return j({ error: "Executor authentication not configured" }, 503);
+      if (request.headers.get("Authorization") !== "Bearer " + env.EXECUTOR_SECRET) return j({ error: "Unauthorized" }, 401);
+      if (url.pathname.startsWith("/api/media/") && request.method === "PUT") {
+        const key = url.pathname.slice("/api/media/".length);
+        if (!env.WB_FISSION_KV) return j({ error: "KV not configured" }, 503);
+        const body = await request.arrayBuffer();
+        await env.WB_FISSION_KV.put("media:" + key, body);
+        return j({ success: true, key, url: "https://wb-bot.diytale.com/media/" + key, size: body.byteLength });
       }
-
-      if (request.method === "GET") {
-        if (!env.WB_FISSION_KV || typeof env.WB_FISSION_KV.list !== "function") {
-          return json({ code: 500, error: "KV list is not available" }, 500);
-        }
-        const statusFilter = url.searchParams.get("status");
-        const listResult = await env.WB_FISSION_KV.list({ prefix: "task:" });
-        const tasks = [];
-        for (const key of listResult.keys) {
-          const val = await env.WB_FISSION_KV.get(key.name, "json");
-          if (val && (!statusFilter || val.status === statusFilter)) {
-            tasks.push({ key: key.name, ...val });
+      if (url.pathname === "/api/wb-resource" && request.method === "GET") {
+        let resource;
+        try { resource = new URL(url.searchParams.get("url")); } catch { return j({error:"Invalid URL"},400); }
+        const allowed = resource.hostname === "www.wildberries.ru" || resource.hostname === "static.wbstatic.net" || resource.hostname === "cdn.wbbasket.ru" || /^[a-z]{3}-basket-cdn-[0-9]+\.geobasket\.ru$/.test(resource.hostname) ||
+          /^(?:static-)?basket-[0-9]+\.(?:wbbasket|wb)\.ru$/.test(resource.hostname);
+        if (!allowed || resource.protocol !== "https:" || resource.username || resource.password || resource.port) return j({error:"Forbidden resource"},400);
+        try {
+          const upstream = await fetch(resource.href,{signal:AbortSignal.timeout(10000),redirect:"manual",headers:{"User-Agent":"Mozilla/5.0","Referer":"https://www.wildberries.ru/"}});
+          if (!upstream.ok) return j({error:"WB resource unavailable",upstream_status:upstream.status},502);
+          return new Response(upstream.body,{headers:{"Content-Type":upstream.headers.get("Content-Type") || "application/octet-stream","Cache-Control":"private, no-store"}});
+        } catch (error) { return j({error:"WB resource unavailable",reason:error.name + ": " + error.message},502); }
+      }
+      if (url.pathname === "/api/credentials") {
+        return coordinate(env, "/credentials" + url.search, request.method === "POST" ? await request.json() : null);
+      }
+      if (url.pathname === "/api/wb-proxy" && ["GET", "POST", "PUT", "PATCH"].includes(request.method)) {
+        let target;
+        try { target = new URL(url.searchParams.get("url")); } catch { return j({ error: "Invalid URL" }, 400); }
+        const allowedHosts = [
+          "content-api.wildberries.ru",
+          "marketplace-api.wildberries.ru",
+          "prices-api.wildberries.ru",
+          "card.wb.ru",
+          "cdn.wbbasket.ru"
+        ];
+        const isAllowed = allowedHosts.includes(target.hostname) ||
+          /^[a-z]{3}-basket-cdn-[0-9]+\.geobasket\.ru$/.test(target.hostname) ||
+          /^(?:static-)?basket-[0-9]+\.(?:wbbasket|wb)\.ru$/.test(target.hostname);
+        if (!isAllowed || target.protocol !== "https:") return j({ error: "Forbidden host: " + target.hostname }, 403);
+        const headers = new Headers();
+        const wbToken = request.headers.get("X-WB-Token");
+        if (wbToken) headers.set("Authorization", wbToken);
+        const ct = request.headers.get("Content-Type");
+        if (ct) headers.set("Content-Type", ct);
+        for (const [k, v] of request.headers.entries()) {
+          const lower = k.toLowerCase();
+          if (lower.startsWith("x-nm-") || lower.startsWith("x-photo-")) {
+            headers.set(k, v);
           }
         }
-        return json({ code: 0, count: tasks.length, tasks });
+        headers.set("User-Agent", "WB-Fission/2.0");
+        try {
+          const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
+          const upstream = await fetch(target.href, { method: request.method, headers, body, signal: AbortSignal.timeout(35000) });
+          const resBody = await upstream.arrayBuffer();
+          return new Response(resBody, { status: upstream.status, headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json", "Cache-Control": "private, no-store" } });
+        } catch (error) {
+          return j({ error: "WB proxy error", reason: error.name + ": " + error.message }, 502);
+        }
       }
-
-      if (request.method === "POST" && url.pathname === "/api/tasks/update") {
-        let payload;
-        try { payload = await request.json(); } catch { return new Response("Invalid JSON", { status: 400 }); }
-        const { key, status, summary, details, notify_feishu, notify_text } = payload;
-        if (!key) return new Response("Missing task key", { status: 400 });
-        let task = await env.WB_FISSION_KV.get(key, "json");
-        if (!task) return new Response("Task not found", { status: 404 });
-        
-        task.status = status || task.status;
-        task.summary = summary || task.summary;
-        if (details) task.details = details;
-        task.updated_at = Date.now();
-        await env.WB_FISSION_KV.put(key, JSON.stringify(task));
-
-        // Send Feishu notification if requested
-        if (notify_feishu && (task.task_id || payload.message_id)) {
-          const msgId = payload.message_id || task.task_id;
-          const chatId = payload.chat_id || task.chat_id;
+      if (url.pathname === "/api/source" && request.method === "POST") {
+        const { nmId } = await request.json();
+        if (!/^[0-9]{6,13}$/.test(String(nmId))) return j({ error: "Invalid nmId" }, 400);
+        const errors = [];
+        for (const version of ["v4", "v2"]) {
+          const sourceUrl = `https://card.wb.ru/cards/${version}/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm=${nmId}`;
           try {
-            const token = await getTenantAccessToken(env);
-            const content = notify_text || `🎉 WB 货号 ${task.nmId} 裂变与合规审核已完成！\n${task.summary}`;
-            await sendFeishuReply(token, msgId, chatId, content);
-          } catch (e) {
-            console.error("Feishu notify error:", e.message);
-          }
+            const response = await fetch(sourceUrl, {signal: AbortSignal.timeout(12000)});
+            if (!response.ok) { errors.push("HTTP " + response.status); continue; }
+            const data = await response.json();
+            const product = (data.products || data.data?.products || []).find(p => String(p.id) === String(nmId));
+            if (product) return j({ product, url:sourceUrl, retrieved_at:Date.now() });
+            errors.push("product_not_found");
+          } catch { errors.push("source_unavailable"); }
         }
-        return json({ code: 0, task });
+        return j({ product:null, errors });
       }
-
-      return new Response("Not Found", { status: 404 });
+      if (url.pathname === "/api/tasks" && request.method === "GET") {
+        return coordinate(env, "/list" + url.search);
+      }
+      if (url.pathname === "/api/executor/heartbeat" && request.method === "POST") {
+        return coordinate(env, "/heartbeat", await request.json());
+      }
+      if (url.pathname === "/api/tasks/import" && request.method === "POST") {
+        // Preserve legacy records; do not trust the old hardcoded demo's ready status.
+        const tasks = [];
+        let cursor;
+        do {
+          const page = await env.WB_FISSION_KV.list({ prefix: "task:", ...(cursor ? { cursor } : {}) });
+          for (const key of page.keys) {
+            const task = await env.WB_FISSION_KV.get(key.name, "json");
+            if (task) tasks.push({ ...task, key: key.name });
+          }
+          cursor = page.list_complete ? null : page.cursor;
+        } while (cursor);
+        return coordinate(env, "/import", { tasks });
+      }
+      const routes = { "/api/tasks/claim": "/claim", "/api/tasks/update": "/update", "/api/tasks/retry": "/retry" };
+      if (routes[url.pathname] && request.method === "POST") {
+        let payload;
+        try { payload = await request.json(); } catch { return j({ error: "Invalid JSON" }, 400); }
+        // State updates do not send messages to other users.
+        return coordinate(env, routes[url.pathname], payload);
+      }
+      return j({ error: "Not found" }, 404);
     }
-
-    // 3. Feishu Webhook handling
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
     let body;
-    try { body = await request.json(); } catch { return new Response("Invalid JSON", { status: 400 }); }
-    if (!body || typeof body !== "object" || Array.isArray(body)) return new Response("Invalid event", { status: 400 });
-    if (body.encrypt) return new Response("Encrypted events are not supported", { status: 400 });
-    if (!env.FEISHU_VERIFICATION_TOKEN) return new Response("Webhook verification is not configured", { status: 503 });
+    try { body = await request.json(); } catch { return j({ error: "Invalid JSON" }, 400); }
+    if (!body || typeof body !== "object" || Array.isArray(body) || body.encrypt) return j({ error: "Invalid or encrypted event" }, 400);
+    if (!env.FEISHU_VERIFICATION_TOKEN) return j({ error: "Verification not configured" }, 503);
     const incomingToken = body.type === "url_verification" ? body.token : body.header?.token;
-    if (incomingToken !== env.FEISHU_VERIFICATION_TOKEN) return new Response("Forbidden", { status: 403 });
+    if (incomingToken !== env.FEISHU_VERIFICATION_TOKEN) return j({ error: "Forbidden" }, 403);
     if (body.type === "url_verification") {
-      if (typeof body.challenge !== "string") return new Response("Invalid challenge", { status: 400 });
-      return json({ challenge: body.challenge });
+      return typeof body.challenge === "string" ? j({ challenge: body.challenge }) : j({ error: "Invalid challenge" }, 400);
     }
     if (body.header?.event_type === "im.message.receive_v1") {
-      if (body.header.app_id !== (env.FEISHU_APP_ID || DEFAULT_APP_ID)) return new Response("Wrong app", { status: 403 });
-      if (!env.FEISHU_APP_SECRET || !env.WB_FISSION_KV) return new Response("Receipt service is not configured", { status: 503 });
-      ctx.waitUntil(handleFeishuEvent(body, env).catch(() => {
-        console.error("Feishu event processing failed");
-      }));
+      if (body.header.app_id !== (env.FEISHU_APP_ID || DEFAULT_APP_ID)) return j({ error: "Wrong app" }, 403);
+      if (!env.FEISHU_APP_SECRET || !env.TASK_COORDINATOR) return j({ error: "Service not configured" }, 503);
+      ctx.waitUntil(handleFeishuEvent(body, env).catch(() => console.error("Feishu event processing failed")));
     }
-    return json({ code: 0 });
+    return j({ code: 0 });
   }
 };

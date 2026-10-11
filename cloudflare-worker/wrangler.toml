@@ -4,13 +4,21 @@ compatibility_date = "2024-09-23"
 
 [vars]
 FEISHU_APP_ID = "cli_aa42e84775381cfd"
-FEISHU_APP_SECRET = "NcLarA9twiyyneVhhD7rsXqyT18uEvvF"
-FEISHU_VERIFICATION_TOKEN = "QdoDl12wOpeihgls3I3T6bsgfwtVwyZu"
 
 [[kv_namespaces]]
 binding = "WB_FISSION_KV"
 id = "76603af5b96a4924a591ff25e3b9abb8"
 
 [[routes]]
-pattern = "wb-bot.diytale.com/*"
+pattern = "wb-bot.diytale.com"
 custom_domain = true
+
+[durable_objects]
+bindings = [{ name = "TASK_COORDINATOR", class_name = "TaskCoordinator" }]
+
+[[migrations]]
+tag = "v1-task-coordinator"
+new_sqlite_classes = ["TaskCoordinator"]
+
+[triggers]
+crons = ["* * * * *"]

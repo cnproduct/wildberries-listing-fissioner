@@ -1,6 +1,6 @@
 ---
 name: wildberries-listing-fissioner
-description: 将 Wildberries 商品链接、货号或已确认的图片与规格转为多套俄语营销方案、场景主图和可审查资产包，默认十套。用于商品内容差异化与导出；实际店铺发布需另行核验类目模板、账号权限与执行结果。
+description: 从 Wildberries 商品链接或货号自动获取原图和资料，生成同款产品十种应用场景的图片、俄语标题和描述，回传飞书并导出资产包。用于商品图文差异化，不要求上架参数；实际店铺发布需另行核验。
 ---
 
 # Wildberries Listing Fissioner
@@ -31,6 +31,8 @@ description: 将 Wildberries 商品链接、货号或已确认的图片与规格
 
 ## 导出
 
+飞书图文流程由执行器调用 `scripts/creative_bundle.py` 生成10图、文案、Excel、Markdown 与ZIP，不要求包装参数或条码。以下通用导出器用于草稿审查及准备卖家上架资料，严格模式不作为创意制作前置条件。
+
 按 [references/export-contract.md](references/export-contract.md) 组织 JSON。所有命令从本 Skill 目录执行，不依赖某个平台的安装路径：
 
 ```bash
@@ -42,18 +44,16 @@ python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SE
 
 导出包含审查工作簿、相对路径图片和 manifest。工作簿是内部审查格式；正式批量导入必须使用卖家后台下载的当前类目模板并验证映射。脚本校验不证明商品事实真实性或视觉一致性，Agent 仍须完成审查。
 
-## 飞书与生产级自动化执行（Cloudflare + Antigravity 架构）
+## 飞书与后台执行
 
-系统采用 Cloudflare 边缘网关 + Antigravity 守护执行器的协同架构：
-1. **Cloudflare 边缘网关**（7×24h 在线）：负责飞书 Webhook 接收验签、请求防抖去重、秒级回复并登记至 KV 待办池；
-2. **Antigravity 守护执行器**（云服务器 / 本机运行）：从网关消费待办任务，执行 10 维受众裂变、Pillow 图像合规检验、导出审核工作簿并回写通知：
+Cloudflare 网关接收请求，持久队列保存任务并控制执行租约；后台服务以心跳报告在线状态。使用 [references/task-runtime.md](references/task-runtime.md) 管理执行器、生成适配器与故障恢复。
 
-```bash
-# 启动常驻监听执行器（每 5 秒轮询一次 Cloudflare 待办任务）
-python3 scripts/antigravity_executor.py --interval 5
+飞书默认执行图片与文案制作：一个链接或自然语言中的“WB 货号” → 自动读取对应商品的名称、描述、原图 → 规划十种真实适用场景 → 使用原图编辑 → 逐张对照检查 → 在原聊天发送十条图片与俄语标题、描述，并附含图片、Excel、Markdown 和 manifest 的 ZIP。
 
-# 单次立即执行已有任务
-python3 scripts/antigravity_executor.py --once
-```
+生成场景图文只需要可用的真实原图。条码、包装长宽高、重量、原产国不是创意制作的必填条件；缺失参数直接省略，不虚构。需要实际店铺上架时，才独立核验卖家条码、类目属性、包装参数和授权。
 
-没有配置真实 `WB_API_TOKEN` 时，执行器会严格生成官方 Content API v2 建卡载荷 `cards/upload` 与审核工作簿，并在飞书如实告知完成与待发布状态；若配置了有效 Token，则调用官方接口创建商品卡片。不凭空捏造虚假进度，不承诺未核验的自动生效。
+公开商品数据先由云端获取，要求返回 ID 与请求 nmId 一致；原图从相同 nmId 的资源路径下载并校验。链接不可访问时仅请求原图或商品名称等最关键资料，不发送整套上架参数清单。飞书图片消息可补充原图，并自动恢复任务。
+
+后台生成通过显式配置的适配器完成。本仓库的 `native_generation_adapter.mjs` 使用已登录的 Antigravity 原生文本和图像能力，传入原商品图片并执行多模态对照审查；模型审查仍需要卖家最终复核，不能作为平台合规通过的证明。
+
+`ready` 表示资产包已生成且飞书交付回执已确认，尚未上架。店铺建卡、媒体上传、定价库存及可见性是后续独立操作。本轮修复不自动向 WB 创建商品。

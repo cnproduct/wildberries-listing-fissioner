@@ -1,80 +1,54 @@
 # Wildberries Listing Fissioner
 
-把一个商品的已确认事实转为多套俄语营销方案、场景主图与可审查资产包，默认十套。可用于 Codex 与 Antigravity 共享工作目录。
+在飞书发送一个 Wildberries 商品链接，自动读取原商品资料和图片，生成同款产品的10种场景图片、俄语标题与描述，并回传图文和完整压缩包。Skill 与代码可在 Codex、Antigravity 共享目录协作维护。
 
-本项目目前提供 Skill 指令、Python 导出器与飞书请求接收示例。自动商品抓取、图文生成执行器和 WB API 发布尚未接通。素材差异化不保证流量、平台审核通过或同商品重复创建获准。
+## 使用
 
-## 使用 Skill
+向“WB 1拆10 Listing 裂变助手”发送详情链接、裸平台货号，或自然语言，例如：
 
-阅读 [SKILL.md](SKILL.md)，提供 WB 详情链接或平台货号、原图、真实规格与包装测量。Agent 先锁定商品事实，再选择适用的受众与场景，制作并逐项审查图文。
+> 原图参考 WB 货号 1879785812，生成10种不同应用场景的图片和描述。
 
-材质、容量、性能、包装数量等事实不能因营销方案变化。卖家 SKU、WB 平台货号 nmId 和条码必须区分。
+系统自动获取该 nmId 的原图、名称与描述，按实际用途规划场景，使用原图编辑并逐张进行多模态对照检查。无需为了制作图文提供条码、包装尺寸、重量或原产国。无法读取原图时，只请求关键缺项；可在同一聊天发送商品原图继续。
 
-## 本地导出
+发送“进度”查看当前阶段和已完成张数；发送“重试”恢复失败或待交付任务，并复用已通过的图片。补充事实可发送 `资料:` 后附 JSON，但不要在聊天发送 API Token。
 
-Python 3.10+；先安装依赖：
+交付包含10条场景图文及 ZIP，内含图片、俄语文案、Excel 和 manifest。`ready` 必须有10条场景消息及压缩包的真实飞书回执。生成或上传失败会保留成品，不能误报完成。
+
+## 运行结构
+
+Cloudflare Worker → SQLite Durable Object 任务协调器 → 常驻 Python 执行器 → Antigravity 原生图文适配器 → 对照审查 → 飞书交付。
+
+公开商品请求必须返回相同 nmId。WB 图片路由从当前官网使用的 CDN 配置解析，不执行远程脚本，不依赖过期的固定 basket 表。生成图片保持瓶型或其他商品形状、颜色、品牌、原包装和数量，只改变背景、光线与构图；不使用演示产品替代，不绘制占位商品。
+
+部署、私有配置、macOS 服务和恢复机制见 [references/task-runtime.md](references/task-runtime.md)。生成依赖执行电脑保持在线及有效的 Antigravity 登录；休眠、断网或关机时，云端保留任务并显示执行器离线。
+
+飞书应用需要获取与上传图片或文件资源权限 `im:resource`，开通后发布应用版本。缺此权限会返回真实错误 `99991672`，此时图文可生成，但不能自动上传回传。不要把机器人能回复文字视为具备图片上传权限。
+
+## 商品事实与上架
+
+使用前请阅读 [SKILL.md](SKILL.md)。模型对照检查辅助筛查，成品仍需卖家复核。原图和公开描述不能证明未列明的安全、认证或性能。
+
+本流程生成营销资产。实际 WB 店铺发布需独立核验类目属性、卖家货号与条码、包装参数、账号权限、媒体上传、价格库存和可见性，不自动发布同款商品卡。差异化素材不保证流量、审核通过或重复建卡获准。
+
+保留的通用审查导出器支持草稿与卖家资料严格校验：
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 scripts/fission_exporter.py --json examples/sample_fission_data.json --sku DEMO --out ./output
+python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SELLER_SKU --out /absolute/path/output
+python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SELLER_SKU --out /absolute/path/validated --strict
 ```
 
-示例是虚构教学资料，图片链接为占位地址，只能作为草稿演示。默认导出缺项清单，不自动补尺寸、重量、价格、折扣、品牌、原产国或条码。
+`--strict` 的包装参数和条码要求适用于准备店铺资料，飞书创意流程使用独立的 `creative_bundle.py`。审查工作簿不是 WB 官方导入模板。示例 JSON 为教学资料，不能用作真实生成或发布依据。输入合同见 [references/export-contract.md](references/export-contract.md)。
 
-实际商品资料完整后运行严格校验：
-
-```bash
-python3 scripts/fission_exporter.py --json /absolute/path/variants.json --sku SELLER_SKU --out ./output/validated --strict
-```
-
-数量不是十套时加 `--expected-count N`。图片相对路径按输入 JSON 所在目录解析。输出目录已存在时拒绝覆盖。
-
-输出 `wb_fission_<SKU>/` 中包含：
-
-- `WB_Listing_Review_<SKU>.xlsx`：内部审查工作簿与 QA 清单。
-- `images/`：归档本地图像，保留实际文件格式。
-- `wb_fission_<SKU>_manifest.json`：版本、缺项、相对路径与草稿/校验状态。
-
-工作簿不是 WB 官方导入模板。正式导入必须下载卖家后台当前类目模板并验证字段映射。严格模式通过仅代表脚本校验通过，商品真实性、图像一致性与平台发布需分别验证。输入合同见 [references/export-contract.md](references/export-contract.md)。
-
-## 飞书网关
-
-### Cloudflare Worker
-
-源码见 `cloudflare-worker/src/index.js`。识别 WB 商品链接和平台货号，把每条请求保存到独立 KV 键；“进度”显示最近请求的真实待执行状态。不会根据耗时伪造进度，也不会保存聊天中的 WB Token 或声称店铺授权有效。
-
-部署前在 Cloudflare 受保护的 Secret 配置中设置：
-
-- `FEISHU_APP_SECRET`
-- `FEISHU_VERIFICATION_TOKEN`
-
-保留正确的 `FEISHU_APP_ID`、`WB_FISSION_KV` 绑定和域名配置。Webhook 当前支持未加密事件的 Verification Token 与 app_id 校验；加密事件会拒绝，解密及签名验证尚未实现。没有必要配置时拒绝处理事件。
-
-源码修改不会更新线上服务。本轮没有重新部署、发送飞书消息或创建 WB 商品。
-
-KV 中 `task:<sender>:<message>` 保存独立请求，`latest_task:<sender>` 仅是最近请求的指针。顺序重试可复用已保存请求；KV 最终一致性不能保证并发幂等、原子锁或消息必达。后续正式任务队列应使用持久队列与具备事务/租约的状态存储。
-
-### 本地长连接
-
-```bash
-python3 scripts/feishu_bot_service.py
-```
-
-启动前通过进程环境配置 `FEISHU_APP_SECRET` 和可选的 `FEISHU_APP_ID`。本地模式只演示消息接收，不持久化任务或令牌；自动生成和店铺发布尚未接通。
-
-## 已暴露凭证的处理
-
-旧版本在源码及配置中包含应用密钥。本轮已移除当前工作文件中的密钥并忽略本地凭证与用户数据目录，但 Git 历史和已部署服务没有因此改变。上线前必须在飞书后台轮换密钥，并更新受保护的环境配置。历史 Token 存储与日志是否存在应由维护者另行检查；本轮没有访问或删除线上数据。
-
-## 验证与协同
+## 验证与协作
 
 ```bash
 python3 -m unittest discover -s tests -v
 node --test tests/test_worker.mjs
 ```
 
-测试均使用临时目录或模拟飞书服务，没有外部消息和商品发布。
+测试覆盖创意模式无需上架参数、原商品 ID 与动态图片路由、图片和标题去重、真实回执要求、部分交付恢复、并发领取、失效租约、心跳及输入解析。普通测试不发送飞书消息或创建 WB 商品。
 
-Antigravity 与 Codex 的共享进度、兼容性变更及下一步任务见 [CODEX_CONTEXT.md](CODEX_CONTEXT.md)。读取该文件与当前差异后再编辑；同一文件同时变化时合并处理，避免覆盖另一方的更新。
+当前运行事实与待办见 [CODEX_CONTEXT.md](CODEX_CONTEXT.md)。
 
 [MIT License](LICENSE)
