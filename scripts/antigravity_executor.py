@@ -21,6 +21,13 @@ from scripts.creative_bundle import build_creative_bundle
 from scripts.feishu_delivery import FeishuDelivery, DeliveryError
 from scripts.wb_source import acquire_source
 
+try:
+    from .runtime_files import write_json, read_cache
+    from .creative_bundle import validate_bundle
+except ImportError:
+    from runtime_files import write_json, read_cache
+    from creative_bundle import validate_bundle
+
 logger = logging.getLogger("wb-executor")
 CONFIG_PATH = Path.home() / ".config/wb-fission/executor.json"
 
@@ -40,13 +47,13 @@ def load_config(path=CONFIG_PATH):
     return config
 
 
-def request_json(url, method="GET", data=None, headers=None, timeout=15):
+def request_json(url, method="GET", data=None, headers=None, timeout=15, opener=None):
     payload = json.dumps(data, ensure_ascii=False).encode() if data is not None else None
     headers = dict(headers or {})
     headers.update({"Content-Type": "application/json", "User-Agent": "WB-Fission/2.0"})
     req = urllib.request.Request(url, method=method, data=payload, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with (opener or urllib.request.urlopen)(req, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         raise GatewayError(f"HTTP {exc.code}") from None
@@ -58,10 +65,13 @@ class Gateway:
     def __init__(self, config):
         self.url = config["GATEWAY_URL"].rstrip("/")
         self.secret = config["EXECUTOR_SECRET"]
+        # Local system proxies have returned stale task snapshots after deployment.
+        # Keep the task-control connection direct; native generation may still use its proxy.
+        self.open = None if config.get('GATEWAY_USE_SYSTEM_PROXY') is True else urllib.request.build_opener(urllib.request.ProxyHandler({})).open
 
     def call(self, path, data=None):
         return request_json(self.url + path, "POST" if data is not None else "GET",
-                            data, {"Authorization": "Bearer " + self.secret})
+                            data, {"Authorization": "Bearer " + self.secret}, timeout=30 if path == "/api/source" else 15, opener=self.open)
 
 
 class LeaseSession:
@@ -136,33 +146,8 @@ def fetch_product(nm_id):
 
 def construct_wb_cards_upload_payload(payload):
     """Offline construction only, using seller-confirmed category and attributes."""
-    subject_id = payload.get("subject_id")
-    if isinstance(subject_id, bool) or not isinstance(subject_id, int) or subject_id <= 0:
-        raise ValueError("A verified subject_id is required")
-    cards = []
-    for item in payload["items"]:
-        vendor_code = item.get("vendor_code")
-        characteristics = item.get("characteristics", payload.get("characteristics"))
-        if not vendor_code or not isinstance(characteristics, list) or not characteristics:
-            raise ValueError("Seller vendor_code and verified characteristics are required")
-        for attribute in characteristics:
-            if not isinstance(attribute, dict) or not isinstance(attribute.get("id"), int) or isinstance(attribute["id"], bool) or attribute["id"] <= 0 or "value" not in attribute:
-                raise ValueError("Invalid characteristic")
-        dimensions = {
-            "length": item.get("length_cm", payload.get("length_cm")),
-            "width": item.get("width_cm", payload.get("width_cm")),
-            "height": item.get("height_cm", payload.get("height_cm")),
-            "weightBrutto": item.get("weight_kg", payload.get("weight_kg")),
-        }
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0 for v in dimensions.values()):
-            raise ValueError("Verified package dimensions and weight are required")
-        if not isinstance(item.get("barcode"), str) or not item["barcode"]:
-            raise ValueError("Real seller barcode is required")
-        variants = {"vendorCode": vendor_code, "title": item["title"], "description": item["description"],
-                    "brand": payload["brand"], "dimensions": dimensions, "characteristics": characteristics,
-                    "sizes": [{"techSize": item.get("tech_size", ""), "skus": [item["barcode"]]}]}
-        cards.append({"subjectID": subject_id, "variants": [variants]})
-    return cards
+    from scripts.wb_upload_fixed import construct_wb_cards_upload_payload as construct
+    return construct(payload, payload.get('subject_id'), [item.get('barcode') for item in payload.get('items', [])])
 
 
 def download_source_image(facts, config, destination):
@@ -205,7 +190,7 @@ def get_facts(task, config, output):
     return facts
 
 
-def run_generator(task, facts, evidence, output, command, progress=None, check_lease=None):
+def run_generator(task, facts, evidence, output, command, progress=None, check_lease=None, account=None):
     """Adapter uses a configured program argv, never a command supplied by a customer."""
     argv = command if isinstance(command, list) else shlex.split(command)
     if not argv:
@@ -215,7 +200,7 @@ def run_generator(task, facts, evidence, output, command, progress=None, check_l
     deadline = time.monotonic() + 3600
     with (output / 'generator.err.log').open('a') as error_log:
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_log,
-                                   text=True, cwd=output)
+                                   text=True, cwd=output, env={**os.environ, **({"ANTIGRAVITY_ACCOUNT":account} if account else {})})
         last_progress = None
         initial_input = json.dumps(payload, ensure_ascii=False)
         try:
@@ -244,6 +229,10 @@ def run_generator(task, facts, evidence, output, command, progress=None, check_l
             raise
     (output / 'generator.err.log').chmod(0o600)
     generated = json.loads(stdout)
+    return validate_generated(generated, task, facts)
+
+
+def validate_generated(generated, task, facts):
     if str(generated.get("source_nm_id")) != str(task["nmId"]):
         raise ValueError("Generated assets do not match the requested product")
     if generated.get("review", {}).get("subject_consistency_verified") is not True:
@@ -284,7 +273,7 @@ def execute_task(task, gateway, config, worker_id):
         output.mkdir(parents=True, exist_ok=True)
         facts = get_facts(claimed, config, output)
         evidence, facts = acquire_source(claimed, gateway, config, output, facts)
-        (output / "source-evidence.json").write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
+        write_json(output / "source-evidence.json", evidence)
         if not facts.get('source_images'):
             summary = '已读取商品名称，但原图暂时无法取得。请在本聊天发送该商品原图，即可继续制作10套场景图文。' if evidence.get('product') else '此链接暂时无法读取。请确认链接，或在本聊天发送商品原图和名称，即可继续。'
             update('needs_input', summary, {'missing_fields':['source_images'], 'source_retrieved':bool(evidence.get('product')), 'source_errors':evidence.get('errors',[]), 'published':False})
@@ -300,19 +289,19 @@ def execute_task(task, gateway, config, worker_id):
         output = output / fingerprint
         output.mkdir(parents=True,exist_ok=True)
         generated_path = output / 'generated-assets.json'
-        if generated_path.exists():
-            generated = json.loads(generated_path.read_text())
-        else:
+        generated = read_cache(generated_path)
+        if generated is None:
             update('generating_text', '正在依据原商品规划10种应用场景与俄语文案。')
-            generated = run_generator(claimed, facts, evidence, output, command, progress=update, check_lease=lease.ensure_owned)
-            generated_path.write_text(json.dumps(generated, ensure_ascii=False, indent=2))
+            generated = run_generator(claimed, facts, evidence, output, command, progress=update, check_lease=lease.ensure_owned, account=config.get("ANTIGRAVITY_ACCOUNT"))
+            write_json(generated_path, generated)
+        validate_generated(generated, claimed, facts)
         update('reviewing', '正在整理10套图文与可下载压缩包。', {'completed':10,'total':10,'published':False})
         bundle_path = output / 'bundle-paths.json'
-        if bundle_path.exists():
-            bundle = json.loads(bundle_path.read_text())
-        else:
+        bundle = read_cache(bundle_path)
+        if bundle is None:
             bundle = build_creative_bundle(generated, output / 'bundle')
-            bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
+            write_json(bundle_path, bundle)
+        validate_bundle(bundle, claimed["nmId"])
         def owned():
             lease.call('/api/executor/heartbeat', {**identity, 'capabilities':capabilities(config)})
         update('reviewing', '10套图文已生成，正在发送图片、描述与压缩包到本聊天。', {'completed':10,'total':10,'published':False})
@@ -358,7 +347,7 @@ def run_daemon(config, interval=5, run_once=False):
     while True:
         try:
             gateway.call("/api/executor/heartbeat", {"worker_id": worker_id, "capabilities": capabilities(config)})
-            tasks = gateway.call("/api/tasks?status=waiting_executor").get("tasks", [])
+            tasks = gateway.call("/api/tasks?status=waiting_executor").get("tasks", []) if capabilities(config)["generation"] else []
             for task in tasks:
                 try:
                     execute_task(task, gateway, config, worker_id)

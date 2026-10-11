@@ -7,6 +7,13 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+try:
+    from .runtime_files import write_json, read_cache
+    from .creative_bundle import validate_bundle
+except ImportError:
+    from runtime_files import write_json, read_cache
+    from creative_bundle import validate_bundle
+
 BASE = 'https://open.feishu.cn/open-apis'
 
 
@@ -80,13 +87,20 @@ class FeishuDelivery:
         if not task.get('chat_id'):
             raise DeliveryError('Originating conversation missing')
         checkpoint = Path(checkpoint)
-        receipt = json.loads(checkpoint.read_text()) if checkpoint.exists() else {'scenes': {}, 'uploads': {}}
-        def persist():
-            checkpoint.write_text(json.dumps(receipt, ensure_ascii=False, indent=2))
-            checkpoint.chmod(0o600)
+        # A changed recipient or changed artifact must never inherit old receipts.
+        validate_bundle(bundle, task['nmId'])
         manifest = bundle['manifest']
         revision = hashlib.sha256(json.dumps(manifest,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:16]
-        task = {**task, 'task_id':task['task_id'] + ':' + revision}
+        binding = {'task_id':task['task_id'], 'chat_id':task['chat_id'], 'revision':revision}
+        receipt = read_cache(checkpoint)
+        if checkpoint.exists() and (not isinstance(receipt, dict) or receipt.get('binding') != binding):
+            raise DeliveryError('Delivery checkpoint requires reconciliation: identity or revision mismatch')
+        receipt = receipt or {'binding':binding, 'scenes':{}, 'uploads':{}}
+        if not isinstance(receipt.get('scenes'), dict) or not isinstance(receipt.get('uploads'), dict) or any(k not in {str(i) for i in range(1,11)} or not isinstance(v,str) or not v for k,v in receipt['scenes'].items()):
+            raise DeliveryError('Invalid delivery receipts')
+        def persist():
+            write_json(checkpoint, receipt)
+        task = {**task, 'task_id':task['task_id'] + ':' + task['chat_id'] + ':' + revision}
         base = Path(bundle['manifest_path']).parent
         for item in manifest['items']:
             index = str(item['index'])
@@ -103,6 +117,7 @@ class FeishuDelivery:
                 [{'tag': 'text', 'text': item['title']}],
                 [{'tag': 'text', 'text': item['description']}],
                 [{'tag': 'img', 'image_key': key}]]}}
+            before_send()
             receipt['scenes'][index] = self.send(task, 'post', content, 'scene:' + index)
             persist()
         if not receipt.get('archive_message_id'):
@@ -110,6 +125,7 @@ class FeishuDelivery:
             key = receipt.get('archive_key') or self.upload(bundle['archive_path'], 'file')
             receipt['archive_key'] = key
             persist()
+            before_send()
             receipt['archive_message_id'] = self.send(task, 'file', {'file_key': key}, 'archive')
             persist()
         before_send()

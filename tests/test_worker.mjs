@@ -58,7 +58,7 @@ test("health reports actual heartbeat and generation capability", async () => {
   await f.call("/heartbeat",{worker_id:"w",capabilities:{generation:true}});
   h=await (await worker.fetch(new Request("https://example.test/"),f.env,ctx)).json();
   assert.equal(h.executor_online,true); assert.equal(h.generation_enabled,true);
-  await f.storage.put("executor",{last_seen:Date.now()-60000,capabilities:{generation:true}});
+  await f.storage.put("executor:w",{last_seen:Date.now()-60000,capabilities:{generation:true}});
   h=await (await worker.fetch(new Request("https://example.test/"),f.env,ctx)).json();
   assert.equal(h.executor_online,false); assert.equal(h.generation_enabled,false);
 });
@@ -184,3 +184,113 @@ test("mock Feishu reply contains actual receipt state", async () => {
      assert.equal(res.status,200);assert.equal(await res.text(),"source");assert.equal(checked,true);
    }finally{globalThis.fetch=saved;}
  });
+
+test('progress, supplementation and retry are isolated by conversation',async()=>{
+ const f=fixture();
+ await buildReply('1879785812','user','a',f.env,'chatA');
+ await buildReply('1520898783','user','b',f.env,'chatB');
+ assert.match(await buildReply('进度','user','q',f.env,'chatA'),/1879785812/);
+ assert.doesNotMatch(await buildReply('进度','user','q',f.env,'chatC'),/1879785812|1520898783/);
+ await buildReply('资料:{"brand":"Brand A"}','user','input',f.env,'chatA');
+ assert.equal((await f.storage.get('task:user:a')).facts.brand,'Brand A');
+ assert.equal((await f.storage.get('task:user:b')).facts,undefined);
+ assert.equal((await f.call('/input',{sender_id:'other',chat_id:'chatA',facts:{brand:'wrong'}})).status,404);
+});
+test('legacy conversation pointers cannot leak into another conversation',async()=>{
+ const f=fixture();await put(f);const t=await f.storage.get('task:user:message');t.chat_id='original';await f.storage.put('task:user:message',t);
+ assert.equal((await (await f.call('/latest?sender=user&chat=other')).json()).task,null);
+ assert.equal((await (await f.call('/latest?sender=user&chat=original')).json()).task.task_id,'message');
+});
+test('new and legacy task responses never contain seller tokens',async()=>{
+ const f=fixture();await f.call('/credentials',{sender_id:'user',credentials:{api_token:'secret-test'}});await put(f);
+ assert.equal((await f.storage.get('task:user:message')).credentials,undefined);
+ const t=await f.storage.get('task:user:message');t.credentials={api_token:'legacy-secret'};await f.storage.put('task:user:message',t);
+ for(const endpoint of ['/list','/latest?sender=user'])assert.doesNotMatch(await (await f.call(endpoint)).text(),/legacy-secret|api_token/);
+ const claimed=await (await f.call('/claim',{key:'task:user:message',worker_id:'w'})).text();assert.doesNotMatch(claimed,/legacy-secret|api_token/);
+});
+test('credential read route is GET, rejects invalid fields, and never promises publication',async()=>{
+ const f=fixture();
+ const reply=await buildReply('API令牌: dummy','user','m',f.env,'chat');
+ assert.match(reply,/尚未验证/);assert.doesNotMatch(reply,/自动关联此店铺凭据执行上架/);
+ const response=await worker.fetch(authRequest('/api/credentials?sender=user'),f.env,ctx);
+ assert.equal(response.status,200);assert.equal((await response.json()).credentials.api_token,'dummy');
+ assert.equal((await f.call('/credentials',{sender_id:'user',credentials:{unknown:'x'}})).status,400);
+});
+test('source JSON is not parsed as a credential-binding command',async()=>{
+ const f=fixture();await put(f);
+ await buildReply('资料:{"source_description":"shop: marketing","source_verified":true}','user','i',f.env);
+ assert.equal(await f.storage.get('credentials:user'),undefined);
+ assert.equal((await f.storage.get('task:user:message')).facts.source_verified,undefined);
+});
+test('ambiguous URLs or URL plus conflicting product ID require clarification',()=>{
+ assert.equal(resolveProduct('https://www.wildberries.ru/catalog/1879785812/detail.aspx https://www.wildberries.ru/catalog/1520898783/detail.aspx'),null);
+ assert.equal(resolveProduct('https://www.wildberries.ru/catalog/1879785812/detail.aspx 货号1520898783'),null);
+});
+test('proxy strips seller authorization on public hosts and refuses redirects',async()=>{
+ const f=fixture(),saved=globalThis.fetch;const calls=[];
+ globalThis.fetch=async(url,options)=>{calls.push(options);return new Response(null,{status:302,headers:{Location:'https://evil.test'}});};
+ try{
+  const req=new Request('https://example.test/api/wb-proxy?url='+encodeURIComponent('https://cdn.wbbasket.ru/api/v3/upstreams'),{headers:{Authorization:'Bearer test_executor','X-WB-Token':'seller-secret'}});
+  assert.equal((await worker.fetch(req,f.env,ctx)).status,502);
+  assert.equal(calls[0].headers.has('Authorization'),false);assert.equal(calls[0].redirect,'manual');
+  assert.equal((await worker.fetch(authRequest('/api/wb-proxy?url='+encodeURIComponent('https://content-api.wildberries.ru:444/')),f.env,ctx)).status,403);
+ }finally{globalThis.fetch=saved;}
+});
+test('stale lease heartbeat does not replace healthy executor capability',async()=>{
+ const f=fixture();await put(f);const {task}=await(await f.call('/claim',{key:'task:user:message',worker_id:'good'})).json();
+ await f.call('/heartbeat',{worker_id:'good',capabilities:{generation:true}});
+ await f.call('/heartbeat',{worker_id:'bad',key:'task:user:message',lease_id:task.lease_id,capabilities:{generation:false}});
+ assert.equal((await(await f.call('/health')).json()).capabilities.generation,true);
+});
+test('durable inbox claims once, retries on expiry and discards sensitive payload after completion',async()=>{
+ const f=fixture(), payload={event:{message:{message_id:'m',content:'sensitive data'}}};
+ await f.call('/events',{id:'m',payload});await f.call('/events',{id:'m',payload});
+ assert.equal((await(await f.call('/events')).json()).events.length,1);
+ const claims=await Promise.all([f.call('/events/claim',{id:'m'}),f.call('/events/claim',{id:'m'})]);
+ assert.deepEqual(claims.map(x=>x.status).sort(),[200,409]);
+ let entry=await f.storage.get('event:m');entry.expires_at=Date.now()-1;await f.storage.put('event:m',entry);
+ const resumed=await(await f.call('/events/claim',{id:'m'})).json();
+ await f.call('/events/done',{id:'m',lease:resumed.lease});
+ assert.equal((await f.storage.get('event:m')).payload,undefined);
+ assert.equal((await(await f.call('/events',{id:'m',payload})).json()).event,null);
+});
+test('replayed input cannot undo later facts or requeue completed tasks',async()=>{
+ const f=fixture();await put(f);
+ await f.call('/input',{sender_id:'user',message_id:'first',facts:{brand:'old'}});
+ await f.call('/input',{sender_id:'user',message_id:'second',facts:{brand:'new'}});
+ const t=await f.storage.get('task:user:message');t.status='ready';await f.storage.put('task:user:message',t);
+ await f.call('/input',{sender_id:'user',message_id:'first',facts:{brand:'old'}});
+ const after=await f.storage.get('task:user:message');assert.equal(after.status,'ready');assert.equal(after.facts.brand,'new');
+});
+test('multiple executors preserve available generation capability; receipt-only worker cannot claim',async()=>{
+ const f=fixture();await put(f);
+ await f.call('/heartbeat',{worker_id:'generator',capabilities:{generation:true}});
+ await f.call('/heartbeat',{worker_id:'receipt-only',capabilities:{generation:false}});
+ assert.equal((await(await f.call('/health')).json()).capabilities.generation,true);
+ assert.equal((await f.call('/claim',{key:'task:user:message',worker_id:'receipt-only'})).status,409);
+});
+test('webhook persists event before acknowledgement and background processing',async()=>{
+ const f=fixture();let pending;
+ const body={header:{event_type:'im.message.receive_v1',token:'dummy_verification',app_id:'test_app'},event:{sender:{sender_type:'user',sender_id:{open_id:'user'}},message:{message_type:'text',message_id:'queued',chat_id:'chat',content:JSON.stringify({text:'1879785812'})}}};
+ const saved=globalThis.fetch;globalThis.fetch=async()=>{throw Error('offline');};
+ try{
+  const response=await worker.fetch(request(body),f.env,{waitUntil(p){pending=p;}});
+  assert.equal(response.status,200);assert.ok(await f.storage.get('event:queued'));
+  await pending;assert.equal((await f.storage.get('task:user:queued')).nmId,'1879785812');
+  assert.equal((await f.storage.get('event:queued')).done,undefined);
+ }finally{globalThis.fetch=saved;}
+});
+test('recovery builds per-chat pointers for older conversations without selecting another chat',async()=>{
+ const f=fixture();
+ await f.storage.put('task:user:oldA',{sender_id:'user',chat_id:'a',task_id:'oldA',status:'ready',timestamp:1});
+ await f.storage.put('task:user:oldB',{sender_id:'user',chat_id:'b',task_id:'oldB',status:'ready',timestamp:2});
+ await f.storage.put('latest:user','task:user:oldB');await f.call('/recover');
+ assert.equal((await(await f.call('/latest?sender=user&chat=a')).json()).task.task_id,'oldA');
+ assert.equal((await(await f.call('/latest?sender=user&chat=b')).json()).task.task_id,'oldB');
+});
+test('authenticated task snapshots cannot be cached by intermediaries',async()=>{
+ const f=fixture();await put(f);
+ const response=await worker.fetch(authRequest('/api/tasks'),f.env,ctx);
+ assert.match(response.headers.get('Cache-Control'),/no-store/);
+ assert.equal(response.headers.get('Vary'),'Authorization');
+});

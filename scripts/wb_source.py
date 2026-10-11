@@ -8,13 +8,18 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 from PIL import Image
+try:
+    from .runtime_files import write_json, read_cache
+except ImportError:
+    from runtime_files import write_json, read_cache
 
 
 def resource(config, url):
     target = config['GATEWAY_URL'].rstrip('/') + '/api/wb-resource?url=' + quote(url, safe='')
     req = urllib.request.Request(target, headers={'Authorization': 'Bearer ' + config['EXECUTOR_SECRET']})
     try:
-        with urllib.request.urlopen(req, timeout=18) as response:
+        opener = urllib.request.urlopen if config.get('GATEWAY_USE_SYSTEM_PROXY') is True else urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+        with opener(req, timeout=18) as response:
             data = response.read(32 * 1024 * 1024 + 1)
             if len(data) > 32 * 1024 * 1024:
                 return None
@@ -41,9 +46,12 @@ def acquire_source(task, gateway, config, output, facts):
         raise ValueError('Invalid product ID')
     facts = dict(facts)
     evidence_path = Path(output) / 'source-evidence.json'
-    evidence = json.loads(evidence_path.read_text()) if evidence_path.exists() else {'product': None}
+    evidence = read_cache(evidence_path, {'product': None})
     if not evidence.get('product'):
-        evidence = gateway.call('/api/source', {'nmId': nm_id})
+        try:
+            evidence = gateway.call('/api/source', {'nmId': nm_id})
+        except (RuntimeError, OSError):
+            evidence = {'product':None, 'errors':['public_source_unavailable']}
     product = evidence.get('product')
     if product:
         if str(product.get('id')) != nm_id:
@@ -61,17 +69,18 @@ def acquire_source(task, gateway, config, output, facts):
         facts['source_verified'] = True
         return evidence, facts
     cached = Path(output) / 'source-cache.json'
-    if cached.exists():
-        data = json.loads(cached.read_text())
-        if data.get('source_nm_id') == nm_id and all(Path(f).is_file() for f in data.get('source_images', [])):
+    data = read_cache(cached, {})
+    if data.get('source_nm_id') == nm_id and data.get('source_images'):
+        try:
             for file in data['source_images']:
                 with Image.open(file) as image:
                     image.verify()
             facts = {**data['facts'], **facts}
             facts['source_images'] = data['source_images']
+            facts['source_verified'] = True
             return evidence, facts
-    if not product:
-        return evidence, facts
+        except (OSError, ValueError, KeyError):
+            evidence.setdefault('errors', []).append('source_cache_invalid')
     vol, part = int(nm_id) // 100000, int(nm_id) // 1000
     def read_card(root):
         payload = resource(config, root + 'info/ru/card.json')
@@ -121,28 +130,32 @@ def acquire_source(task, gateway, config, output, facts):
         evidence.setdefault('errors', []).append('original_image_cdn_unavailable')
         return evidence, facts
     root, card = found
+    facts.setdefault('product_name', card['imt_name'])
     evidence['card_url'] = root + 'info/ru/card.json'
     evidence['card'] = card
     if card.get('description'):
-        facts['source_description'] = card['description']
+        facts.setdefault('source_description', card['description'])
     if card.get('subj_name'):
-        facts['category'] = card['subj_name']
+        facts.setdefault('category', card['subj_name'])
     selling = card.get('selling', {})
     if selling.get('brand_name'):
-        facts['brand'] = selling['brand_name']
+        facts.setdefault('brand', selling['brand_name'])
     originals = []
-    for index in range(1, min(int(product.get('pics',1)),2) + 1):
+    for index in range(1, min(max(int((product or {}).get('pics',2)),1),2) + 1):
         url = root + f'images/big/{index}.webp'
         payload = resource(config, url)
         if not payload:
             continue
-        with Image.open(io.BytesIO(payload)) as image:
-            image.verify()
+        try:
+            with Image.open(io.BytesIO(payload)) as image:
+                image.verify()
+        except (OSError, ValueError):
+            continue
         file = Path(output) / f'original-{index}.webp'
         file.write_bytes(payload)
         originals.append(str(file))
     if originals:
         facts['source_images'] = originals
         facts['source_verified'] = True
-        cached.write_text(json.dumps({'source_nm_id':nm_id,'source_images':originals,'facts':facts},ensure_ascii=False,indent=2))
+        write_json(cached, {'source_nm_id':nm_id,'source_images':originals,'facts':facts})
     return evidence, facts

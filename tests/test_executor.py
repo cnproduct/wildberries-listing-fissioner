@@ -160,3 +160,26 @@ class LeaseRecoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class GatewayTransportTests(unittest.TestCase):
+    def test_default_control_connection_does_not_use_system_proxy_transport(self):
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def read(self):return b'{"tasks":[]}'
+        from unittest.mock import MagicMock
+        opener=MagicMock();opener.open.return_value=Response()
+        with patch.object(executor.urllib.request,'build_opener',return_value=opener),patch.object(executor.urllib.request,'urlopen',side_effect=AssertionError('System proxy selected')):
+            gateway=executor.Gateway({'GATEWAY_URL':'https://example.test','EXECUTOR_SECRET':'dummy'})
+            self.assertEqual(gateway.call('/api/tasks'),{'tasks':[]})
+        self.assertEqual(opener.open.call_args.args[0].full_url,'https://example.test/api/tasks')
+
+    def test_proxy_is_used_only_with_explicit_operator_config(self):
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def read(self):return b'{"tasks":[]}'
+        with patch.object(executor.urllib.request,'urlopen',return_value=Response()) as request:
+            gateway=executor.Gateway({'GATEWAY_URL':'https://example.test','EXECUTOR_SECRET':'dummy','GATEWAY_USE_SYSTEM_PROXY':True})
+            gateway.call('/api/tasks')
+            request.assert_called_once()

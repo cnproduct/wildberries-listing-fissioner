@@ -4,17 +4,21 @@ import html
 import json
 import shutil
 import zipfile
+import tempfile
+import re
 from pathlib import Path
 from PIL import Image
 from openpyxl import Workbook
 
 
-def build_creative_bundle(data, output):
+def _build_creative_bundle(data, output):
     if data.get('example_only') or data.get('review', {}).get('subject_consistency_verified') is not True:
         raise ValueError('Reviewed source-product images required')
     items = data.get('items', [])
     if len(items) != 10:
         raise ValueError('Exactly ten scenes required')
+    if not re.fullmatch(r'[0-9]{6,13}', str(data.get('source_nm_id', ''))):
+        raise ValueError('Invalid source product ID')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'images').mkdir()
@@ -23,6 +27,8 @@ def build_creative_bundle(data, output):
         for key in ('persona', 'title', 'description', 'scene_name'):
             if not isinstance(item.get(key), str) or not item[key].strip():
                 raise ValueError('Missing creative field: ' + key)
+        if not isinstance(item.get('keywords', []), list) or any(not isinstance(k, str) for k in item.get('keywords', [])):
+            raise ValueError('Keywords must be strings in a list')
         title = item['title'].strip()
         if len(title) > 60 or title.casefold() in titles:
             raise ValueError('Invalid or duplicate title')
@@ -79,3 +85,59 @@ def build_creative_bundle(data, output):
             if file.is_file():
                 z.write(file, file.relative_to(output))
     return {'manifest_path': str(manifest_path), 'excel_path': str(excel), 'archive_path': str(archive), 'manifest': manifest}
+
+
+def validate_bundle(bundle, nm_id=None):
+    """Recheck disk bytes and archive, including after an interrupted execution."""
+    manifest_path = Path(bundle['manifest_path'])
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if manifest != bundle['manifest'] or (nm_id is not None and str(manifest['source_nm_id']) != str(nm_id)):
+        raise ValueError('Bundle source or manifest mismatch')
+    if manifest.get('count') != 10 or manifest.get('published') is not False or manifest.get('review', {}).get('subject_consistency_verified') is not True:
+        raise ValueError('Unreviewed bundle')
+    items = manifest.get('items', [])
+    if [i.get('index') for i in items] != list(range(1, 11)):
+        raise ValueError('Invalid scene indexes')
+    base = manifest_path.parent.resolve()
+    hashes = set()
+    for item in items:
+        path = (base / item['image_path']).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
+            raise ValueError('Invalid bundle image path')
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != item['sha256'] or digest in hashes:
+            raise ValueError('Bundle image checksum mismatch')
+        hashes.add(digest)
+    with zipfile.ZipFile(bundle['archive_path']) as archive:
+        if archive.testzip() or json.loads(archive.read('manifest.json')) != manifest:
+            raise ValueError('Archive does not match bundle')
+        for item in items:
+            if hashlib.sha256(archive.read(item['image_path'])).hexdigest() != item['sha256']:
+                raise ValueError('Archive image checksum mismatch')
+    return bundle
+
+
+def build_creative_bundle(data, output):
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        # A crash after the atomic directory rename can precede bundle-paths.json.
+        manifest = json.loads((output / 'manifest.json').read_text(encoding='utf-8'))
+        if manifest.get('review') != data.get('review') or len(data.get('items', [])) != 10:
+            raise ValueError('Existing bundle differs from reviewed result')
+        for row, item in zip(manifest['items'], data['items']):
+            if any(row.get(k) != item.get(k) for k in ('title','description','scene_name','persona','keywords')) or row['sha256'] != hashlib.sha256(Path(item['image_path']).read_bytes()).hexdigest():
+                raise ValueError('Existing bundle differs from reviewed result')
+        return validate_bundle({'manifest_path':str(output/'manifest.json'), 'excel_path':str(output/'场景图文.xlsx'),
+            'archive_path':str(output / ('WB-' + str(data['source_nm_id']) + '-10-scenes.zip')), 'manifest':manifest},data['source_nm_id'])
+    with tempfile.TemporaryDirectory(prefix='.bundle-', dir=output.parent) as temp:
+        staged = Path(temp) / 'assets'
+        bundle = _build_creative_bundle(data, staged)
+        archive = Path(bundle['archive_path'])
+        archive.rename(staged / archive.name)
+        bundle['archive_path'] = str(staged / archive.name)
+        validate_bundle(bundle, data['source_nm_id'])
+        staged.rename(output)
+        for key in ('manifest_path','excel_path','archive_path'):
+            bundle[key] = str(output / Path(bundle[key]).name)
+        return bundle
