@@ -252,7 +252,8 @@ export async function executeListingCommand(senderId, chatId, env, requested = n
   confirmMsg += "• 目标店铺：" + shopName + "\n";
   confirmMsg += "• 发货仓库：" + warehouseId + "\n";
   confirmMsg += "• 变体数量：10 款全新场景同款\n";
-  confirmMsg += "• 初始库存：每款 5 件\n\n";
+  confirmMsg += "• 初始库存：每款 5 件\n";
+  confirmMsg += "• 定价策略：梯度定价（前5款+1%~15%溢价测试，后5款-1%~10%促销穿透，每款价格互不相同）\n\n";
   confirmMsg += "上架任务已准备就绪。正在核对商品类目属性与官方条码，即将通过 Wildberries 官方 API 批量建卡并同步 8 图矩阵与初始库存。上架进度与分配的 nmID 将实时同步本聊天。";
   return confirmMsg;
 }

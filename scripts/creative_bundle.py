@@ -9,6 +9,10 @@ import re
 from pathlib import Path
 from PIL import Image
 from openpyxl import Workbook
+try:
+    from .wb_pricing import calculate_fission_prices, extract_base_price_from_source
+except ImportError:
+    from wb_pricing import calculate_fission_prices, extract_base_price_from_source
 
 
 def _build_creative_bundle(data, output):
@@ -22,6 +26,15 @@ def _build_creative_bundle(data, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'images').mkdir()
+    base_price = data.get('base_price') or data.get('source_facts', {}).get('price')
+    if not base_price and data.get('source_evidence'):
+        base_price = extract_base_price_from_source(data['source_evidence'])
+    fission_pricing = None
+    if isinstance(base_price, (int, float)) and not isinstance(base_price, bool) and base_price > 0:
+        try:
+            fission_pricing = calculate_fission_prices(base_price)
+        except ValueError:
+            fission_pricing = None
     rows, titles, hashes = [], set(), set()
     for index, item in enumerate(items, 1):
         for key in ('persona', 'title', 'description', 'scene_name'):
@@ -46,8 +59,14 @@ def _build_creative_bundle(data, output):
             raise ValueError('Invalid scene image size or format')
         ref = f'images/{index:02d}{extension}'
         shutil.copy2(source, output / ref)
-        rows.append({**{k: item.get(k) for k in ('scene_name', 'persona', 'title', 'description', 'keywords')},
-                     'index': index, 'image_path': ref, 'sha256': digest})
+        row_data = {**{k: item.get(k) for k in ('scene_name', 'persona', 'title', 'description', 'keywords')},
+                    'index': index, 'image_path': ref, 'sha256': digest}
+        if fission_pricing:
+            p_info = fission_pricing[index - 1]
+            row_data['price'] = p_info['price']
+            row_data['price_delta_ratio'] = p_info['delta_ratio']
+            row_data['price_delta_percent'] = p_info['delta_percent']
+        rows.append(row_data)
     manifest = {'schema_version': 1, 'mode': 'creative', 'source_nm_id': str(data['source_nm_id']),
                 'status': 'reviewed_creative_assets', 'published': False, 'count': 10,
                 'review': data['review'], 'source_facts': data.get('source_facts', {}), 'items': rows}
@@ -58,18 +77,33 @@ def _build_creative_bundle(data, output):
     book = Workbook()
     sheet = book.active
     sheet.title = '场景图文'
-    sheet.append(['编号', '场景', '受众', '俄语标题', '俄语描述', '关键词', '图片'])
-    for row in rows:
-        sheet.append([row['index'], row['scene_name'], row['persona'], row['title'], row['description'],
-                      ', '.join(row['keywords'] or []), row['image_path']])
-        for cell in sheet[sheet.max_row]:
-            if isinstance(cell.value, str):
-                cell.data_type = 's'
-        lines += [f"## {row['index']:02d} · {row['scene_name']}", '', f"受众：{row['persona']}", '',
-                  f"**{row['title']}**", '', row['description'], '', f"![{row['scene_name']}]({row['image_path']})", '']
-    sheet.freeze_panes = 'A2'
-    for column, width in [('A', 8), ('B', 25), ('C', 25), ('D', 55), ('E', 90), ('F', 40), ('G', 25)]:
-        sheet.column_dimensions[column].width = width
+    if fission_pricing:
+        sheet.append(['编号', '场景', '受众', '建议售价 (₽)', '价格浮动', '俄语标题', '俄语描述', '关键词', '图片'])
+        for row in rows:
+            sheet.append([row['index'], row['scene_name'], row['persona'], row.get('price'), row.get('price_delta_percent'),
+                          row['title'], row['description'], ', '.join(row['keywords'] or []), row['image_path']])
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):
+                    cell.data_type = 's'
+            lines += [f"## {row['index']:02d} · {row['scene_name']}", '', f"受众：{row['persona']}", '',
+                      f"建议售价：{row.get('price')} ₽ ({row.get('price_delta_percent')})", '',
+                      f"**{row['title']}**", '', row['description'], '', f"![{row['scene_name']}]({row['image_path']})", '']
+        sheet.freeze_panes = 'A2'
+        for column, width in [('A', 8), ('B', 25), ('C', 25), ('D', 15), ('E', 15), ('F', 55), ('G', 90), ('H', 40), ('I', 25)]:
+            sheet.column_dimensions[column].width = width
+    else:
+        sheet.append(['编号', '场景', '受众', '俄语标题', '俄语描述', '关键词', '图片'])
+        for row in rows:
+            sheet.append([row['index'], row['scene_name'], row['persona'], row['title'], row['description'],
+                          ', '.join(row['keywords'] or []), row['image_path']])
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):
+                    cell.data_type = 's'
+            lines += [f"## {row['index']:02d} · {row['scene_name']}", '', f"受众：{row['persona']}", '',
+                      f"**{row['title']}**", '', row['description'], '', f"![{row['scene_name']}]({row['image_path']})", '']
+        sheet.freeze_panes = 'A2'
+        for column, width in [('A', 8), ('B', 25), ('C', 25), ('D', 55), ('E', 90), ('F', 40), ('G', 25)]:
+            sheet.column_dimensions[column].width = width
     excel = output / '场景图文.xlsx'
     book.save(excel)
     (output / '场景图文.md').write_text('\n'.join(lines))

@@ -193,3 +193,22 @@ class CreativeTests(unittest.TestCase):
         with patch.object(wb_source,'resource',side_effect=resource):
             _,facts=acquire_source({'nmId':'1879785812'},Empty(),{},self.root,{'brand':'Confirmed'})
         self.assertEqual(facts['brand'],'Confirmed');self.assertEqual(len(facts['source_images']),1)
+
+    def test_creative_bundle_with_fission_pricing(self):
+        from openpyxl import load_workbook
+        data = {**self.data, 'base_price': 590}
+        result = build_creative_bundle(data, self.root / 'bundle_pricing')
+        manifest = result['manifest']
+        prices = [item['price'] for item in manifest['items']]
+        self.assertEqual(len(prices), 10)
+        self.assertEqual(len(set(prices)), 10)
+        for p in prices[:5]:
+            self.assertGreater(p, 590)
+        for p in prices[5:]:
+            self.assertLess(p, 590)
+        wb = load_workbook(result['excel_path'])
+        ws = wb['场景图文']
+        headers = [cell.value for cell in ws[1]]
+        self.assertIn('建议售价 (₽)', headers)
+        self.assertIn('价格浮动', headers)
+
