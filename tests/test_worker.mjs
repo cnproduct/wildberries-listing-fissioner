@@ -6,7 +6,7 @@ const coordinatorSource = await readFile(new URL("../cloudflare-worker/src/task-
 const coordinatorURL = "data:text/javascript;base64," + Buffer.from(coordinatorSource).toString("base64");
 const { TaskCoordinator } = await import(coordinatorURL);
 const source = (await readFile(new URL("../cloudflare-worker/src/index.js", import.meta.url), "utf8")).replace('"./task-coordinator.js"', JSON.stringify(coordinatorURL));
-const { default: worker, resolveProduct, buildReply, handleFeishuEvent, isFailureQuestion, isCredentialQuestion, parseJwtClaims, verifyAndReportCredentials } = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
+const { default: worker, resolveProduct, buildReply, handleFeishuEvent, isFailureQuestion, isCredentialQuestion, isListingQuestion, isListingCommand, explainListingStatus, executeListingCommand, parseJwtClaims, verifyAndReportCredentials } = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 
 class Storage {
   data = new Map();
@@ -417,4 +417,111 @@ test('natural credential inquiries report verified store credentials and token s
   await f.call('/credentials', { sender_id: 'user_exp', credentials: { shop_name: 'EXPIRED_SHOP', warehouse_id: '123', api_token: expiredJwt } });
   const expReply = await buildReply('核验令牌', 'user_exp', 'm5', f.env);
   assert.match(expReply, /已过期/);
+});
+
+test('isListingQuestion and isListingCommand identify natural listing inquiries and commands', () => {
+  const listingQuestions = [
+    '为何未上架',
+    '这个为何未上架',
+    '为什么还没上架',
+    '为何还没上架',
+    '为啥未上架',
+    '怎么还没上架',
+    '为什么没上架',
+    '为什么不上架',
+    '未上架原因',
+    '为什么不自动上架',
+    '什么时候上架',
+    '何时上架',
+    '怎么上架',
+    '如何上架',
+    '为何尚未上架',
+    '这个商品为何未上架？',
+    'WB 货号 1879785812 为何未上架'
+  ];
+  for (const q of listingQuestions) {
+    assert.equal(isListingQuestion(q), true, `Failed for question: ${q}`);
+    assert.equal(isListingCommand(q), false, `Should not be command: ${q}`);
+  }
+
+  const listingCommands = [
+    '上架',
+    '确认上架',
+    '开始上架',
+    '立即上架',
+    '执行上架',
+    '申请上架',
+    '发布到店铺',
+    '确认发布'
+  ];
+  for (const cmd of listingCommands) {
+    assert.equal(isListingCommand(cmd), true, `Failed for command: ${cmd}`);
+  }
+
+  // Non-listing queries
+  assert.equal(isListingQuestion('进度'), false);
+  assert.equal(isListingQuestion('重试'), false);
+  assert.equal(isListingQuestion('核验令牌'), false);
+  assert.equal(isListingQuestion('1879785812'), false);
+});
+
+test('natural listing questions explain why task is not yet listed and provide store status and next steps', async () => {
+  const f = fixture();
+  const validJwt = 'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAzdjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODA3NDU4NzY3LCJmb3IiOiJzZWxmIiwiaWQiOiIwMWExMjkxNy03YWI4LTdjMTYtYTc4Zi02ZjM0ZWZhNWE1MGIiLCJpaWQiOjMxODk0MTU5OSwib2lkIjoyNTAyMDIyNTIsInMiOjgxNjYyLCJzaWQiOiI3NDVhMTVmZS04N2Y0LTQ2MTUtYTU3Zi02NGQyNTYzMzVjMWUiLCJ0IjpmYWxzZSwidWlkIjozMTg5NDE1OTl9.sig';
+  await f.call('/credentials', { sender_id: 'user_wb_list', credentials: { shop_name: 'RR010', warehouse_id: '2200772', api_token: validJwt } });
+
+  // Create a ready task
+  await f.call('/put', { key: 'task:user_wb_list:ready_task', task: { task_id: 'om_x100b63f4aa3d14a0b296c89eebe9ba6', sender_id: 'user_wb_list', chat_id: 'chat_list', nmId: '1879785812' } });
+  const t = await f.storage.get('task:user_wb_list:ready_task');
+  t.status = 'ready';
+  t.summary = '10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。';
+  await f.storage.put('task:user_wb_list:ready_task', t);
+
+  // 1. Simple query: "为何未上架"
+  const reply = await buildReply('为何未上架', 'user_wb_list', 'm_why', f.env, 'chat_list');
+  assert.match(reply, /状态：资产包已生成，尚未上架/);
+  assert.match(reply, /【未自动上架原因】/);
+  assert.match(reply, /安全复核机制/);
+  assert.match(reply, /【店铺授权状态】已就绪/);
+  assert.match(reply, /RR010/);
+  assert.match(reply, /2200772/);
+  assert.match(reply, /全权限读写/);
+  assert.match(reply, /【下一步操作】/);
+  assert.match(reply, /发送“上架”或“确认上架”/);
+  assert.doesNotMatch(reply, /请发送一个 WB 商品链接/);
+
+  // 2. Exact user message quoting previous status:
+  const quotedMessage = `最近请求：WB 货号 1879785812
+请求编号：om_x100b63f4aa3d14a0b296c89eebe9ba6
+状态：资产包已生成，尚未上架。
+10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。
+
+这个为何未上架`;
+
+  const taskCountBefore = (await f.storage.list({ prefix: 'task:user_wb_list:' })).size;
+  const quoteReply = await buildReply(quotedMessage, 'user_wb_list', 'm_quote', f.env, 'chat_list');
+  const taskCountAfter = (await f.storage.list({ prefix: 'task:user_wb_list:' })).size;
+
+  // MUST NOT create a new task!
+  assert.equal(taskCountBefore, taskCountAfter);
+  assert.match(quoteReply, /1879785812/);
+  assert.match(quoteReply, /om_x100b63f4aa3d14a0b296c89eebe9ba6/);
+  assert.match(quoteReply, /资产包已生成，尚未上架/);
+  assert.match(quoteReply, /RR010/);
+  assert.match(quoteReply, /2200772/);
+  assert.doesNotMatch(quoteReply, /已记录商品请求/);
+
+  // 3. Command: "上架" or "确认上架"
+  const cmdReply = await buildReply('确认上架', 'user_wb_list', 'm_cmd', f.env, 'chat_list');
+  assert.match(cmdReply, /已确认上架指令，店铺授权核验通过/);
+  assert.match(cmdReply, /RR010/);
+  assert.match(cmdReply, /2200772/);
+  assert.match(cmdReply, /10 款全新场景同款/);
+  assert.match(cmdReply, /每款 5 件/);
+
+  // 4. Inquisitive phrase with product number does NOT create task
+  const askWithNmId = 'WB 货号 1879785812 能否帮我看看？';
+  const askReply = await buildReply(askWithNmId, 'user_wb_list', 'm_ask', f.env, 'chat_list');
+  assert.match(askReply, /识别到商品货号 1879785812/);
+  assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore);
 });

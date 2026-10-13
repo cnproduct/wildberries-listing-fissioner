@@ -8,7 +8,7 @@ const LEASE_MS = 180000;
 const MAX_ATTEMPTS = 3;
 // Task responses never carry seller credentials, including legacy records.
 const publicTask = task => { if (!task) return task; const { credentials, ...safe } = task; return safe; };
-const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-11-diagnostics3"} });
+const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-12-listing-qa1"} });
 const latestKey = (sender, chat) => 'latest:' + sender + (chat ? ':' + encodeURIComponent(chat) : '');
 async function latestInChat(storage, sender, chat) {
   let key = await storage.get(latestKey(sender, chat));
@@ -187,8 +187,54 @@ export class TaskCoordinator {
       });
     }
     if (url.pathname === "/latest") {
-      const latest = await latestInChat(this.storage, url.searchParams.get("sender"), url.searchParams.get("chat"));
+      const sender = url.searchParams.get("sender");
+      const chat = url.searchParams.get("chat");
+      const nmId = url.searchParams.get("nmid");
+      let latest = await latestInChat(this.storage, sender, chat);
+      if (nmId && (!latest.task || latest.task.nmId !== nmId)) {
+        const tasks = await this.storage.list({ prefix: "task:" + (sender ? encodeURIComponent(sender) + ":" : "") });
+        const matches = [...tasks.entries()].filter(([, t]) => t && t.nmId === nmId && (!chat || t.chat_id === chat));
+        if (matches.length) {
+          matches.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
+          const readyMatch = matches.find(([, t]) => t.status === "ready");
+          const chosen = readyMatch || matches[0];
+          latest = { key: chosen[0], task: chosen[1] };
+        }
+      }
       return j({ key: latest.key, task: publicTask(latest.task) });
+    }
+    if (url.pathname === "/task" && request.method === "GET") {
+      const key = url.searchParams.get("key");
+      const sender = url.searchParams.get("sender");
+      const taskId = url.searchParams.get("task_id");
+      const taskKey = key || (sender && taskId ? "task:" + encodeURIComponent(sender) + ":" + encodeURIComponent(taskId) : null);
+      if (!taskKey) return j({ error: "key or sender+task_id required" }, 400);
+      const task = await this.storage.get(taskKey);
+      return j({ key: task ? taskKey : null, task: publicTask(task) });
+    }
+    if (url.pathname === "/task" && request.method === "DELETE") {
+      const key = url.searchParams.get("key");
+      if (!key?.startsWith("task:")) return j({ error: "key required" }, 400);
+      return this.storage.transaction(async tx => {
+        const task = await tx.get(key);
+        if (!task) return j({ error: "Task not found" }, 404);
+        await tx.delete(key);
+        if (task.sender_id && task.chat_id) {
+          const pKey = latestKey(task.sender_id, task.chat_id);
+          const current = await tx.get(pKey);
+          if (current === key) {
+            const all = await tx.list({ prefix: "task:" + encodeURIComponent(task.sender_id) + ":" });
+            const remaining = [...all.entries()].filter(([k, t]) => k !== key && t.chat_id === task.chat_id);
+            if (remaining.length) {
+              remaining.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
+              await tx.put(pKey, remaining[0][0]);
+            } else {
+              await tx.delete(pKey);
+            }
+          }
+        }
+        return j({ code: 0, deleted: key });
+      });
     }
     if (url.pathname === "/list" || url.pathname === "/recover") {
       return this.storage.transaction(async tx => {

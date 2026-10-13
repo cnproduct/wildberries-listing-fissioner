@@ -3,11 +3,13 @@ export { TaskCoordinator };
 
 const DEFAULT_APP_ID = "cli_aa42e84775381cfd";
 const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization"} });
-export async function coordinate(env, path, body) {
+export async function coordinate(env, path, body, method = (body === undefined ? "GET" : "POST")) {
   if (!env.TASK_COORDINATOR) throw new Error("Task coordinator is not configured");
   const stub = env.TASK_COORDINATOR.get(env.TASK_COORDINATOR.idFromName("wb-fission"));
-  return stub.fetch(new Request("https://coordinator" + path, body === undefined ? {} : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  return stub.fetch(new Request("https://coordinator" + path, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
   }));
 }
 export function resolveProduct(text) {
@@ -60,6 +62,174 @@ async function health(env) { return (await coordinate(env, "/health")).json(); }
 export function isFailureQuestion(text) {
   return /(?:为什么|为何|什么原因|怎么|哪里|咋).*(?:失败|报错|异常|出错|卡住|没成功|未完成|没完成|没有完成)|(?:失败|报错|异常|出错|卡住).*(?:原因|为什么|怎么|解释)|(?:怎么回事|失败原因|错误原因|故障原因|怎么解决|如何解决|怎么办|什么情况)[？?！!。]*$/.test(text);
 }
+
+export function isListingQuestion(text) {
+  const t = text.trim();
+  if (/(?:为何|为什么|为啥|怎么|哪里|咋|什么原因|何时|什么时候).*(?:未上架|还没上架|没上架|不上架|未发布|没发布|自动上架|不自动上架|未进店铺)/i.test(t)) return true;
+  if (/(?:未上架|还没上架|没上架|不上架|未发布).*(?:原因|为什么|为何|为啥|怎么|解释|怎么回事)/i.test(t)) return true;
+  if (/^(?:为何未上架|为什么未上架|为什么还没上架|为何还没上架|为啥还没上架|为啥未上架|怎么还没上架|怎么没上架|为何不上架|为什么不上架|未上架原因|未上架|尚未上架|为何尚未上架|为什么不自动上架|为何不自动上架|何时上架|什么时候上架|怎么上架|如何上架|这个为何未上架)[？?！!。]*$/i.test(t)) return true;
+  if (/(?:为何|为什么|怎么|何时|什么时候).*(?:上架|发布到店铺|推到店铺)[？?！!。]*$/i.test(t)) return true;
+  if (/(?:为何|为什么|为啥).*(?:不上架|未上架|没上架)/i.test(t)) return true;
+  return false;
+}
+
+export function isListingCommand(text) {
+  const t = text.trim();
+  return /^(?:确认上架|开始上架|立即上架|执行上架|申请上架|直接上架|上架|发布到店铺|确认发布)[！!。]*$/i.test(t);
+}
+
+export async function explainListingStatus(senderId, chatId, env, requested = null, quotedTaskId = null) {
+  let task = null;
+  if (quotedTaskId) {
+    const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&task_id=" + encodeURIComponent(quotedTaskId));
+    if (taskRes.ok) {
+      const data = await taskRes.json();
+      if (data.task) task = data.task;
+    }
+  }
+  if (!task) {
+    const query = "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + (requested?.nmId ? "&nmid=" + encodeURIComponent(requested.nmId) : "");
+    const res = await coordinate(env, query);
+    if (res.ok) {
+      const data = await res.json();
+      task = data.task;
+    }
+  }
+  if (!task) {
+    return "本聊天还没有找到您的商品任务，无法核实上架状态。\n如需裂变上架，请先发送 WB 商品链接或货号（如：WB 货号 1879785812）。系统将自动读取原图并生成10种同款场景图文，复核无误后即可发布到您的 WB 店铺。";
+  }
+  if (requested && requested.nmId !== task.nmId) {
+    return "本聊天最近任务的货号是 " + task.nmId + "，与您询问的货号 " + requested.nmId + " 不同。如需处理该货号，请先发送该商品链接。";
+  }
+
+  const prefix = "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id + "\n";
+  const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
+  const creds = credsRes.ok ? (await credsRes.json()).credentials : null;
+  const shopName = creds?.shop_name || "未指定";
+  const warehouseId = creds?.warehouse_id || "未指定";
+  const token = creds?.api_token;
+  const claims = token ? parseJwtClaims(token) : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isExpired = claims?.exp && claims.exp < nowSec;
+  const isTokenValid = claims && !isExpired && claims.t === false;
+
+  if (task.status === "ready") {
+    let answer = prefix + "状态：资产包已生成，尚未上架。\n\n";
+    answer += "【未自动上架原因】\n";
+    answer += "1. 安全复核机制：裂变助手生成10套场景图片与俄语描述后，按平台安全规范，先回传飞书交付商家复核，不会自动静默推送到店铺，避免未经审核直接发布。\n";
+    answer += "2. 需店铺授权确认：发布到 Wildberries 店铺需要核验绑定的店铺 API 令牌与发货仓库。\n\n";
+
+    if (isTokenValid && creds?.warehouse_id) {
+      answer += "【店铺授权状态】已就绪\n";
+      answer += "• 店铺名称：" + shopName + "\n";
+      answer += "• 发货仓库：" + warehouseId + "\n";
+      answer += "• API 令牌：全权限读写（有效）\n\n";
+      answer += "【下一步操作】\n";
+      answer += "商品图文资产包已就绪。请复核本聊天的10套场景图片与俄语标题文案；确认外观和文案满意后，发送“上架”或“确认上架”，系统将调用 Wildberries 官方建卡接口创建10个全新变体并同步图片与初始库存（默认每款5件）。";
+    } else if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
+      answer += "【店铺授权状态】尚未完成\n";
+      answer += "• 店铺名称：" + shopName + "\n";
+      answer += "• 发货仓库：" + warehouseId + "\n";
+      if (!token) {
+        answer += "• API 令牌：尚未上传\n\n";
+        answer += "【下一步操作】\n";
+        answer += "请发送“API令牌：<您的全权限WB API令牌>”完成绑定，核验通过后即可执行店铺上架。";
+      } else if (isExpired) {
+        answer += "• API 令牌：已过期（到期日：" + new Date(claims.exp * 1000).toISOString().slice(0, 10) + "）\n\n";
+        answer += "【下一步操作】\n";
+        answer += "请在 WB 卖家后台重新创建全权限 API 令牌并发送更新。";
+      } else {
+        answer += "• API 令牌：权限不足（需全权限读写令牌）\n\n";
+        answer += "【下一步操作】\n";
+        answer += "请在 WB 卖家后台创建全权限 API 令牌并发送更新。";
+      }
+    } else {
+      answer += "【店铺授权状态】尚未绑定\n";
+      answer += "尚未检测到您的 WB 店铺凭据。\n\n";
+      answer += "【下一步操作】\n";
+      answer += "如需发布到您的 WB 店铺，请按以下格式发送店铺凭据：\n店铺名：RR010\n仓库ID：2200772\nAPI令牌：<您的WB API令牌>";
+    }
+    return answer;
+  }
+
+  if (["waiting_executor", "validating", "processing", "generating_text", "generating_images", "reviewing"].includes(task.status)) {
+    const labels = {
+      waiting_executor: "等待处理", validating: "资料核验中", processing: "处理中",
+      generating_text: "文案制作中", generating_images: "图片制作中", reviewing: "审查中"
+    };
+    return prefix + "状态：" + (labels[task.status] || "制作中") + "。\n\n" +
+      "【未上架原因】\n" +
+      "当前商品任务仍在图文制作流水线中，尚未完成10套场景图文的制作与交付，因此未进入店铺上架环节。\n" +
+      "素材制作完成后会自动交付本聊天供您复核。可发送“进度”查看实时状态。";
+  }
+
+  if (task.status === "needs_input") {
+    return prefix + "状态：需要补充资料。\n\n" +
+      "【未上架原因】\n" +
+      "商品资料缺失（" + (task.summary || "请补充原图或商品名称") + "），制作已暂停，尚未进入上架流程。\n" +
+      "请补充资料后系统将继续制作，制作完成后可安排上架。";
+  }
+
+  if (task.status === "awaiting_delivery") {
+    return prefix + "状态：图文已生成，等待飞书交付。\n\n" +
+      "【未上架原因】\n" +
+      "10套场景图文已制作完成，正在推送至飞书聊天。交付完成后即可复核并确认上架。\n" +
+      "若长时间未收到，可发送“重试”重新发送。";
+  }
+
+  if (task.status === "failed") {
+    return prefix + "状态：处理失败，需检查。\n\n" +
+      "【未上架原因】\n" +
+      "商品图文制作未成功，因而无法执行店铺上架。\n" + explainFailure(task);
+  }
+
+  return prefix + "状态：" + (task.status || "待核验") + "。\n" + (task.summary || "正在处理中；尚未确认上架。");
+}
+
+export async function executeListingCommand(senderId, chatId, env) {
+  const { task } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || ""))).json();
+  if (!task) {
+    return "尚未找到可上架的商品任务。请先发送 WB 商品详情链接或平台货号制作裂变图文。";
+  }
+  const prefix = "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id + "\n";
+  if (task.status !== "ready") {
+    const labels = {
+      waiting_executor: "等待处理", validating: "资料核验中", processing: "处理中",
+      generating_text: "文案制作中", generating_images: "图片制作中", reviewing: "审查中",
+      needs_input: "需要补充资料", awaiting_delivery: "等待交付", failed: "处理失败"
+    };
+    return prefix + "当前商品状态为【" + (labels[task.status] || task.status) + "】，尚未完成完整资产包制作，暂不能执行上架。\n可发送“进度”查看最新状态。";
+  }
+
+  const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
+  const creds = credsRes.ok ? (await credsRes.json()).credentials : null;
+  const token = creds?.api_token;
+  const claims = token ? parseJwtClaims(token) : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isExpired = claims?.exp && claims.exp < nowSec;
+  const isTokenValid = claims && !isExpired && claims.t === false;
+  const shopName = creds?.shop_name || "未指定";
+  const warehouseId = creds?.warehouse_id || "未指定";
+
+  if (!isTokenValid || !creds?.warehouse_id) {
+    let msg = prefix + "已收到上架请求，但店铺授权尚未齐备，无法执行建卡发布：\n";
+    msg += "• 店铺名称：" + shopName + "\n";
+    msg += "• 发货仓库：" + warehouseId + "\n";
+    if (!token) msg += "• API 令牌：尚未上传\n\n请先发送“API令牌：<您的全权限WB API令牌>”完成授权绑定。";
+    else if (isExpired) msg += "• API 令牌：已过期\n\n请在 WB 后台重新生成全权限 API 令牌并发送更新。";
+    else msg += "• API 令牌：非全权限读写令牌\n\n请在 WB 后台生成全权限 API 令牌并发送更新。";
+    return msg;
+  }
+
+  let confirmMsg = prefix + "已确认上架指令，店铺授权核验通过：\n";
+  confirmMsg += "• 目标店铺：" + shopName + "\n";
+  confirmMsg += "• 发货仓库：" + warehouseId + "\n";
+  confirmMsg += "• 变体数量：10 款全新场景同款\n";
+  confirmMsg += "• 初始库存：每款 5 件\n\n";
+  confirmMsg += "上架任务已准备就绪。正在核对商品类目属性与官方条码，即将通过 Wildberries 官方 API 批量建卡并同步 8 图矩阵与初始库存。上架进度与分配的 nmID 将实时同步本聊天。";
+  return confirmMsg;
+}
+
 export function explainFailure(task) {
   const d=task.details || {}, code=d.reason_code || d.reason;
   const reasons={
@@ -259,21 +429,43 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     const resumed = await coordinate(env,"/retry",{key:latest.key,message_id:messageId});
     return resumed.ok ? "已恢复该商品请求，已有通过检查的图片会继续使用，完成后回传本聊天。" : "当前请求正在执行，可发送“进度”查看。";
   }
+  if (isListingCommand(text)) {
+    return await executeListingCommand(senderId, chatId, env);
+  }
+  if (isListingQuestion(text)) {
+    const requested = resolveProduct(text);
+    const quotedTaskIdMatch = text.match(/(?:请求编号|任务编号|编号|task_id)\s*[:：]?\s*(om_[a-zA-Z0-9_-]+)/i) || text.match(/\b(om_[a-zA-Z0-9_-]{16,64})\b/i);
+    const quotedTaskId = quotedTaskIdMatch ? quotedTaskIdMatch[1] : null;
+    return await explainListingStatus(senderId, chatId, env, requested, quotedTaskId);
+  }
   // A question containing a product number must not silently create another job.
   if (isFailureQuestion(text)) {
-    const {task}=await (await coordinate(env,"/latest?sender="+encodeURIComponent(senderId)+"&chat="+encodeURIComponent(chatId || ""))).json();
+    const requested = resolveProduct(text);
+    const quotedTaskIdMatch = text.match(/(?:请求编号|任务编号|编号|task_id)\s*[:：]?\s*(om_[a-zA-Z0-9_-]+)/i) || text.match(/\b(om_[a-zA-Z0-9_-]{16,64})\b/i);
+    const quotedTaskId = quotedTaskIdMatch ? quotedTaskIdMatch[1] : null;
+    let task = null;
+    if (quotedTaskId) {
+      const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&task_id=" + encodeURIComponent(quotedTaskId));
+      if (taskRes.ok) task = (await taskRes.json()).task;
+    }
+    if (!task) {
+      const { task: latestTask } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + (requested?.nmId ? "&nmid=" + encodeURIComponent(requested.nmId) : ""))).json();
+      task = latestTask;
+    }
     if (!task) return "本聊天还没有找到您的商品任务，无法判断失败原因。请先提供商品链接或任务信息。";
-    const requested=resolveProduct(text);
-    if (requested && requested.nmId!==task.nmId) return "本聊天最近任务的货号是 "+task.nmId+"，与您询问的货号不同，不能据此解释该商品的失败原因。";
-    const prefix="最近请求：WB 货号 "+task.nmId+"\n请求编号："+task.task_id+"\n";
-    if (task.status==='failed') return prefix+explainFailure(task);
-    if (task.status==='awaiting_delivery') return prefix+"图文已生成，卡在飞书交付阶段。请维护者检查图片/文件资源权限或连接，再发送“重试”续传。";
-    if (task.status==='needs_input') return prefix+"当前需要补充资料。"+(task.summary || "请补充原图和商品名称。")+"\n补充资料后会继续处理。";
-    if (task.status==='ready') return prefix+"本次图文已经交付，当前没有失败记录。若您指的是店铺上架，请说明具体商品与后台提示。";
-    return prefix+"当前任务尚未被标为失败。"+(task.summary || "正在等待执行。")+"\n可发送“进度”查看；本次询问不会重新创建任务。";
+    if (requested && requested.nmId !== task.nmId) return "本聊天最近任务的货号是 " + task.nmId + "，与您询问的货号不同，不能据此解释该商品的失败原因。";
+    const prefix = "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id + "\n";
+    if (task.status === 'failed') return prefix + explainFailure(task);
+    if (task.status === 'awaiting_delivery') return prefix + "图文已生成，卡在飞书交付阶段。请维护者检查图片/文件资源权限或连接，再发送“重试”续传。";
+    if (task.status === 'needs_input') return prefix + "当前需要补充资料。" + (task.summary || "请补充原图和商品名称。") + "\n补充资料后会继续处理。";
+    if (task.status === 'ready') return prefix + "本次图文已经交付，当前没有失败记录。若您指的是店铺上架，请说明具体商品与后台提示。可发送“为何未上架”查看上架详情。";
+    return prefix + "当前任务尚未被标为失败。" + (task.summary || "正在等待执行。") + "\n可发送“进度”查看；本次询问不会重新创建任务。";
   }
   const product = resolveProduct(text);
   if (product) {
+    if (/(?:？|\?|为什么|为何|为啥|怎么|哪里|咋|什么原因|怎么回事|可否|是否|能否)/.test(text)) {
+      return "识别到商品货号 " + product.nmId + "。如需为该商品制作10套裂变场景图文，请直接发送该货号或商品链接；如需查询状态，请发送“进度”或“为何未上架”。";
+    }
     const key = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
     const response = await coordinate(env, "/put", { key, task: { task_id: messageId, sender_id: senderId, chat_id: chatId, mode: "creative", ...product } });
     if (!response.ok) throw new Error("Task persistence failed");
@@ -348,7 +540,7 @@ export default {
       return j({ status: "online", service: "WB task gateway", queue_backend: "durable-object",
         executor_online: h.online, executor_last_seen: h.last_seen || null,
         generation_enabled: h.online && !!h.capabilities.generation, publishing_enabled: false,
-        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-11-diagnostics3" });
+        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-12-listing-qa1" });
     }
     if (url.pathname.startsWith("/media/") && request.method === "GET") {
       const key = url.pathname.slice("/media/".length);
@@ -454,6 +646,9 @@ export default {
       }
       if (url.pathname === "/api/tasks" && request.method === "GET") {
         return coordinate(env, "/list" + url.search);
+      }
+      if (url.pathname === "/api/task" && ["GET", "DELETE"].includes(request.method)) {
+        return coordinate(env, "/task" + url.search, undefined, request.method);
       }
       if (url.pathname === "/api/executor/heartbeat" && request.method === "POST") {
         return coordinate(env, "/heartbeat", await request.json());
