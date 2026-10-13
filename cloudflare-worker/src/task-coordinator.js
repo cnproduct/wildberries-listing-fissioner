@@ -8,7 +8,7 @@ const LEASE_MS = 180000;
 const MAX_ATTEMPTS = 3;
 // Task responses never carry seller credentials, including legacy records.
 const publicTask = task => { if (!task) return task; const { credentials, ...safe } = task; return safe; };
-const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-12-listing-qa1"} });
+const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-13-camera-policy1"} });
 const latestKey = (sender, chat) => 'latest:' + sender + (chat ? ':' + encodeURIComponent(chat) : '');
 async function latestInChat(storage, sender, chat) {
   let key = await storage.get(latestKey(sender, chat));
@@ -95,7 +95,8 @@ export class TaskCoordinator {
       const counts = {};
       for (const task of tasks.values()) counts[task.status] = (counts[task.status] || 0) + 1;
       const inbox = [...(await this.storage.list({prefix:'event:'})).values()];
-      return j({ event_failures:inbox.filter(e=>e.failed).length, pending_events:inbox.filter(e=>!e.done && !e.failed).length, online, last_seen: executor?.last_seen || null, capabilities: online ? capabilities : {}, counts });
+      const activeExecutors = active.map(e => ({ worker_id: e.worker_id, store: e.store || null, last_seen: e.last_seen }));
+      return j({ version:"2026-10-13-camera-policy1", event_failures:inbox.filter(e=>e.failed).length, pending_events:inbox.filter(e=>!e.done && !e.failed).length, online, last_seen: executor?.last_seen || null, active_executors: activeExecutors, capabilities: online ? capabilities : {}, counts });
     }
     if (url.pathname === "/heartbeat" && request.method === "POST") {
       if (typeof body.worker_id !== "string" || !body.worker_id) return j({ error: "worker_id required" }, 400);
@@ -103,13 +104,13 @@ export class TaskCoordinator {
         return this.storage.transaction(async tx => {
           const task = await tx.get(body.key);
           if (!task || !ACTIVE.has(task.status) || task.lease_id !== body.lease_id || task.worker_id !== body.worker_id || task.lease_expires_at <= now) return j({ error: "Lease lost" }, 409);
-          await tx.put("executor:" + body.worker_id, { worker_id: body.worker_id, last_seen: now, capabilities: body.capabilities || {} });
+          await tx.put("executor:" + body.worker_id, { worker_id: body.worker_id, store: body.store || null, last_seen: now, capabilities: body.capabilities || {} });
           task.lease_expires_at = now + LEASE_MS;
           await tx.put(body.key, task);
           return j({ code: 0 });
         });
       }
-      await this.storage.put("executor:" + body.worker_id, { worker_id: body.worker_id, last_seen: now, capabilities: body.capabilities || {} });
+      await this.storage.put("executor:" + body.worker_id, { worker_id: body.worker_id, store: body.store || null, last_seen: now, capabilities: body.capabilities || {} });
       return j({ code: 0 });
     }
     if (url.pathname === "/credentials" && request.method === "POST") {
@@ -120,12 +121,17 @@ export class TaskCoordinator {
       const existing = (await this.storage.get(key)) || {};
       const updated = { ...existing, ...body.credentials, updated_at: now };
       await this.storage.put(key, updated);
+      if (updated.shop_name) {
+        await this.storage.put("store_credentials:" + updated.shop_name.toUpperCase(), updated);
+      }
       return j({ code: 0, credentials: { shop_name: updated.shop_name, warehouse_id: updated.warehouse_id, has_api_token: !!updated.api_token } });
     }
     if (url.pathname === "/credentials" && request.method === "GET") {
       const sender = url.searchParams.get("sender");
-      if (!sender) return j({ error: "sender required" }, 400);
-      const creds = await this.storage.get("credentials:" + sender);
+      const storeParam = url.searchParams.get("store");
+      let creds = null;
+      if (storeParam) creds = await this.storage.get("store_credentials:" + storeParam.toUpperCase());
+      if (!creds && sender) creds = await this.storage.get("credentials:" + sender);
       return j({ credentials: creds || null });
     }
     if (url.pathname === "/put" && request.method === "POST") {
@@ -135,15 +141,34 @@ export class TaskCoordinator {
         if (prior) return j({ task: publicTask(prior), created: false });
         const task = { ...body.task, status: "waiting_executor", timestamp: now, attempts: 0 };
         delete task.credentials;
+        if (task.target_store) task.target_store = String(task.target_store).toUpperCase();
         await tx.put(body.key, task);
         await tx.put(latestKey(task.sender_id, task.chat_id), body.key);
         return j({ task: publicTask(task), created: true });
       });
     }
+    if (url.pathname === '/restore-failure' && request.method === 'POST') {
+      // Maintenance reconstruction from verified original Feishu message, never enqueue.
+      const t=body.task || {};
+      if (!/^ou_[A-Za-z0-9]+$/.test(t.sender_id || '') || !/^oc_[A-Za-z0-9]+$/.test(t.chat_id || '') ||
+          !/^om_[A-Za-z0-9]+$/.test(t.task_id || '') || !/^[0-9]{6,13}$/.test(t.nmId || '') ||
+          !Number.isSafeInteger(t.timestamp) || t.timestamp<=0 || t.timestamp>now) return j({error:'Invalid historical identity'},400);
+      const key='task:'+encodeURIComponent(t.sender_id)+':'+encodeURIComponent(t.task_id);
+      return this.storage.transaction(async tx=>{
+        if (await tx.get(key)) return j({error:'Existing task must not be replaced'},409);
+        const restored={task_id:t.task_id,sender_id:t.sender_id,chat_id:t.chat_id,nmId:t.nmId,timestamp:t.timestamp,
+          mode:'creative',status:'failed',attempts:0,updated_at:now,restored_at:now,
+          summary:'历史失败记录已按原消息恢复；尚未重新执行。',details:{reason_code:'unknown_failure',published:false}};
+        await tx.put(key,restored);
+        const pointer=latestKey(t.sender_id,t.chat_id), priorKey=await tx.get(pointer),prior=priorKey?await tx.get(priorKey):null;
+        if (!prior || prior.timestamp<t.timestamp) await tx.put(pointer,key);
+        return j({code:0});
+      });
+    }
     if (url.pathname === '/diagnostic' && request.method === 'POST') {
       // Authenticated maintenance may annotate a terminal failure; never change
       // task ownership, status, customer identity or trigger any message.
-      const allowed=['image_quality_failed','generation_timeout','generation_service_unavailable','generation_auth_failed','executor_auth_failed','connection_failed','product_validation_failed','scene_plan_invalid','generator_not_configured','generation_failed','lease_expired','unknown_failure'];
+      const allowed=['image_quality_failed','generation_timeout','generation_service_unavailable','generation_auth_failed','executor_auth_failed','connection_failed','product_validation_failed','scene_plan_invalid','generator_not_configured','generation_failed','generation_model_unavailable','lease_expired','unknown_failure'];
       const d=body.details || {};
       if (!allowed.includes(d.reason_code)) return j({error:'Invalid diagnostic'},400);
       const clean={reason_code:d.reason_code,published:false};
@@ -154,7 +179,7 @@ export class TaskCoordinator {
         }
       }
       if (d.issue_codes!==undefined) {
-        if (!Array.isArray(d.issue_codes) || d.issue_codes.some(x=>!['camera_angle','label_distortion','extra_product','missing_packaging'].includes(x))) return j({error:'Invalid issue code'},400);
+        if (!Array.isArray(d.issue_codes) || d.issue_codes.some(x=>!['camera_angle','label_distortion','extra_product','missing_packaging','composition_mismatch'].includes(x))) return j({error:'Invalid issue code'},400);
         clean.issue_codes=[...new Set(d.issue_codes)];
       }
       return this.storage.transaction(async tx=>{
@@ -196,10 +221,9 @@ export class TaskCoordinator {
         const matches = [...tasks.entries()].filter(([, t]) => t && t.nmId === nmId && (!chat || t.chat_id === chat));
         if (matches.length) {
           matches.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
-          const readyMatch = matches.find(([, t]) => t.status === "ready");
-          const chosen = readyMatch || matches[0];
+          const chosen = matches[0];
           latest = { key: chosen[0], task: chosen[1] };
-        }
+        } else latest = {key:null,task:null};
       }
       return j({ key: latest.key, task: publicTask(latest.task) });
     }
@@ -210,38 +234,25 @@ export class TaskCoordinator {
       const taskKey = key || (sender && taskId ? "task:" + encodeURIComponent(sender) + ":" + encodeURIComponent(taskId) : null);
       if (!taskKey) return j({ error: "key or sender+task_id required" }, 400);
       const task = await this.storage.get(taskKey);
-      return j({ key: task ? taskKey : null, task: publicTask(task) });
+      const chat = url.searchParams.get("chat");
+      const allowed = task && (!sender || task.sender_id === sender) && (!chat || task.chat_id === chat);
+      return j({ key: allowed ? taskKey : null, task: allowed ? publicTask(task) : null });
     }
     if (url.pathname === "/task" && request.method === "DELETE") {
-      const key = url.searchParams.get("key");
-      if (!key?.startsWith("task:")) return j({ error: "key required" }, 400);
-      return this.storage.transaction(async tx => {
-        const task = await tx.get(key);
-        if (!task) return j({ error: "Task not found" }, 404);
-        await tx.delete(key);
-        if (task.sender_id && task.chat_id) {
-          const pKey = latestKey(task.sender_id, task.chat_id);
-          const current = await tx.get(pKey);
-          if (current === key) {
-            const all = await tx.list({ prefix: "task:" + encodeURIComponent(task.sender_id) + ":" });
-            const remaining = [...all.entries()].filter(([k, t]) => k !== key && t.chat_id === task.chat_id);
-            if (remaining.length) {
-              remaining.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
-              await tx.put(pKey, remaining[0][0]);
-            } else {
-              await tx.delete(pKey);
-            }
-          }
-        }
-        return j({ code: 0, deleted: key });
-      });
+      return j({error:"Task history must be retained; deletion is disabled"},409);
     }
+
     if (url.pathname === "/list" || url.pathname === "/recover") {
       return this.storage.transaction(async tx => {
         await this.recover(tx, now);
         const entries = await tx.list({ prefix: "task:" });
         const filter = url.searchParams.get("status");
-        const tasks = [...entries].filter(([, t]) => !filter || t.status === filter).map(([key, t]) => ({ ...publicTask(t), key }));
+        const storeFilter = url.searchParams.get("store");
+        const tasks = [...entries].filter(([, t]) => {
+          if (filter && t.status !== filter) return false;
+          if (storeFilter && t.target_store && t.target_store.toUpperCase() !== storeFilter.toUpperCase()) return false;
+          return true;
+        }).map(([key, t]) => ({ ...publicTask(t), key }));
         tasks.sort((a, b) => a.timestamp - b.timestamp);
         return j({ code: 0, count: tasks.length, tasks });
       });
@@ -255,7 +266,11 @@ export class TaskCoordinator {
         if (task.status !== "waiting_executor") return j({ error: "Already claimed or not eligible" }, 409);
         const executor = await tx.get('executor:'+body.worker_id);
         if (executor && !executor.capabilities?.generation) return j({error:'Executor cannot generate'},409);
+        if (task.target_store && body.store && task.target_store.toUpperCase() !== body.store.toUpperCase()) {
+          return j({ error: "Task target store mismatch" }, 409);
+        }
         task.status = "validating"; task.worker_id = body.worker_id;
+        if (body.store) task.claimed_by_store = body.store.toUpperCase();
         task.lease_id = crypto.randomUUID(); task.lease_expires_at = now + LEASE_MS;
         task.attempts = (task.attempts || 0) + 1; task.updated_at = now;
         task.summary = "正在获取原商品资料并核验，尚未生成或发布。";
@@ -288,6 +303,7 @@ export class TaskCoordinator {
         const task = await tx.get(body.key);
         if (!task) return j({ error:"No task" },404);
         if (body.message_id && await tx.get('mutation:retry:'+body.message_id)) return j({code:0,task:publicTask(task)});
+        if (task.status === "ready") return j({error:"Already delivered; retry would duplicate delivery"},409);
         if (ACTIVE.has(task.status)) return j({ error:"Task is processing" },409);
         if (body.message_id) await tx.put('mutation:retry:'+body.message_id,{key:body.key});
         task.status="waiting_executor"; task.attempts=0; task.mode="creative";

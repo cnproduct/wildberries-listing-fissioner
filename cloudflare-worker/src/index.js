@@ -99,12 +99,13 @@ export function isListingCommand(text) {
 export async function explainListingStatus(senderId, chatId, env, requested = null, quotedTaskId = null, questionText = "") {
   let task = null;
   if (quotedTaskId) {
-    const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&task_id=" + encodeURIComponent(quotedTaskId));
+    const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + "&task_id=" + encodeURIComponent(quotedTaskId));
     if (taskRes.ok) {
       const data = await taskRes.json();
       if (data.task) task = data.task;
     }
   }
+  if (quotedTaskId && !task) return "未找到本聊天的请求编号 " + quotedTaskId + "，不能用其他批次代替，也不能据此认定已交付。请维护者核查历史记录。";
   if (!task) {
     const query = "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + (requested?.nmId ? "&nmid=" + encodeURIComponent(requested.nmId) : "");
     const res = await coordinate(env, query);
@@ -135,8 +136,8 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
     let answer = prefix + "状态：资产包已生成，尚未上架。\n\n";
     if (/(?:前台|链接|主图|一张图|单图|多图|详情页)/.test(questionText)) {
       answer += "【前台图文说明】\n";
-      answer += "您打开的原商品链接仅包含原始商品的单张图片与原版信息。\n";
-      answer += "裂变助手已为该商品生成10套全新的同款场景图（每套含完整主图与轮播图）及俄语描述，已交付本聊天，尚未推送到您的店铺。\n\n";
+      answer += "原商品链接展示原商品资料，不会因生成裂变图文自动改变；实际图片数量需打开对应链接核验。\n";
+      answer += "裂变助手已为该商品生成10套全新的同款场景图（当前自动流程为每套1张主场景图，8张图库需另行制作核验）及俄语描述，已交付本聊天，尚未推送到您的店铺。\n\n";
     }
     answer += "【未自动上架原因】\n";
     answer += "1. 安全复核机制：裂变助手生成10套场景图片与俄语描述后，按平台安全规范，先回传飞书交付商家复核，不会自动静默推送到店铺，避免未经审核直接发布。\n";
@@ -148,7 +149,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
       answer += "• 发货仓库：" + warehouseId + "\n";
       answer += "• API 令牌：全权限读写（有效）\n\n";
       answer += "【下一步操作】\n";
-      answer += "商品图文资产包已就绪。请复核本聊天的10套场景图片与俄语标题文案；确认外观和文案满意后，发送“上架”或“确认上架”（或“继续上架”），系统将调用 Wildberries 官方建卡接口创建10个全新变体并同步图片与初始库存（默认每款5件）。";
+      answer += "商品图文资产包已就绪。请复核本聊天的10套场景图片与俄语标题文案；确认外观和文案满意后，发送“上架”或“确认上架”（或“继续上架”），当前自动服务尚未接入店铺发布执行器，需维护者核验每款8张图片、商品参数、价格和仓库后执行发布；发送指令本身不会创建商品。";
     } else if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
       answer += "【店铺授权状态】尚未完成\n";
       answer += "• 店铺名称：" + shopName + "\n";
@@ -228,34 +229,7 @@ export async function executeListingCommand(senderId, chatId, env, requested = n
     return prefix + "当前商品状态为【" + (labels[task.status] || task.status) + "】，尚未完成完整资产包制作，暂不能执行上架。\n可发送“进度”查看最新状态。";
   }
 
-  const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
-  const creds = credsRes.ok ? (await credsRes.json()).credentials : null;
-  const token = creds?.api_token;
-  const claims = token ? parseJwtClaims(token) : null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const isExpired = claims?.exp && claims.exp < nowSec;
-  const isTokenValid = claims && !isExpired && claims.t === false;
-  const shopName = creds?.shop_name || "未指定";
-  const warehouseId = creds?.warehouse_id || "未指定";
-
-  if (!isTokenValid || !creds?.warehouse_id) {
-    let msg = prefix + "已收到上架请求，但店铺授权尚未齐备，无法执行建卡发布：\n";
-    msg += "• 店铺名称：" + shopName + "\n";
-    msg += "• 发货仓库：" + warehouseId + "\n";
-    if (!token) msg += "• API 令牌：尚未上传\n\n请先发送“API令牌：<您的全权限WB API令牌>”完成授权绑定。";
-    else if (isExpired) msg += "• API 令牌：已过期\n\n请在 WB 后台重新生成全权限 API 令牌并发送更新。";
-    else msg += "• API 令牌：非全权限读写令牌\n\n请在 WB 后台生成全权限 API 令牌并发送更新。";
-    return msg;
-  }
-
-  let confirmMsg = prefix + "已确认上架指令，店铺授权核验通过：\n";
-  confirmMsg += "• 目标店铺：" + shopName + "\n";
-  confirmMsg += "• 发货仓库：" + warehouseId + "\n";
-  confirmMsg += "• 变体数量：10 款全新场景同款\n";
-  confirmMsg += "• 初始库存：每款 5 件\n";
-  confirmMsg += "• 定价策略：梯度定价（前5款+1%~15%溢价测试，后5款-1%~10%促销穿透，每款价格互不相同）\n\n";
-  confirmMsg += "上架任务已准备就绪。正在核对商品类目属性与官方条码，即将通过 Wildberries 官方 API 批量建卡并同步 8 图矩阵与初始库存。上架进度与分配的 nmID 将实时同步本聊天。";
-  return confirmMsg;
+  return prefix + "图文已就绪，但当前飞书自动服务尚未接入店铺发布执行器。此次没有创建上架任务、没有建卡或更新库存。需要维护者核验每款8张图片、商品参数、价格与仓库后执行发布；生成完成不代表上架完成。";
 }
 
 export function explainFailure(task) {
@@ -270,16 +244,17 @@ export function explainFailure(task) {
     product_validation_failed:"生成结果与原商品资料或校验要求不一致。",
     scene_plan_invalid:"场景方案的结构、机位或景别没有达到制作要求。",
     generator_not_configured:"当前没有配置可用的图文生成服务。",
+    generation_model_unavailable:"图文生成服务返回 HTTP 404，当前模型或服务地址不可用。需要维护者核验生成服务配置；这不是 WB 店铺接口的返回。",
     generation_failed:"图文生成程序中断，现有记录未提供更具体的可核实原因。",
     lease_expired:"执行服务多次中断或未及时续报进度，任务已停止自动重试。",
   };
-  const issues={camera_angle:"拍摄角度未达到要求",label_distortion:"产品标签文字或图案失真",extra_product:"画面出现额外商品，可能误导销售数量",missing_packaging:"应展示的包装缺失"};
+  const issues={composition_mismatch:"主体位置或构图不符合方案",camera_angle:"拍摄角度未达到要求",label_distortion:"产品标签文字或图案失真",extra_product:"画面出现额外商品，可能误导销售数量",missing_packaging:"应展示的包装缺失"};
   let answer="失败原因："+(reasons[code] || "这条旧记录没有保存具体错误原因，目前不能确定；需要维护者核对执行记录，不能直接归因于 WB API。")+"\n";
   if (Number.isInteger(d.failed_image) && d.failed_image>=1 && d.failed_image<=10) answer+="停止位置：第"+d.failed_image+"张图片。\n";
   if (Number.isInteger(d.completed) && d.completed>=0 && d.completed<=10) answer+="已通过检查："+d.completed+"/10张。\n";
   const known=[...new Set((Array.isArray(d.issue_codes)?d.issue_codes:[]).filter(x=>Object.hasOwn(issues,x)))];
   if (known.length) answer+="核对发现："+known.map(x=>issues[x]).join("；")+"。\n";
-  if (['generation_auth_failed','executor_auth_failed','generator_not_configured'].includes(code)) answer+="下一步：维护者修复服务后，在本聊天发送“重试”。";
+  if (['generation_auth_failed','executor_auth_failed','generator_not_configured','generation_model_unavailable'].includes(code)) answer+="下一步：维护者修复服务后，在本聊天发送“重试”。";
   else if (code==='product_validation_failed') answer+="下一步：核对并补充正确原图或商品资料，再发送“重试”。";
   else answer+="下一步：发送“重试”，系统会重新核验已有成品并继续制作；询问原因本身不会重新生成或重复发送。";
   return answer;
@@ -416,7 +391,8 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   const hasShopMatch = credentialText.match(/(?:店铺名|店铺|shop)\s*[:：]\s*([^\s]+)/i);
   const hasWarehouseMatch = credentialText.match(/(?:仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*([^\s]+)/i);
 
-  if (hasTokenMatch || hasShopMatch || hasWarehouseMatch) {
+  const isProductSubmission = !!resolveProduct(text);
+  if ((hasTokenMatch || hasWarehouseMatch || hasShopMatch) && (!isProductSubmission || hasTokenMatch)) {
     const creds = {};
     if (hasTokenMatch) creds.api_token = hasTokenMatch[1].trim();
     if (hasShopMatch) creds.shop_name = hasShopMatch[1].trim();
@@ -450,12 +426,18 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     const response = await coordinate(env, "/input", { sender_id: senderId, chat_id: chatId, message_id: messageId, facts });
     return response.ok ? "已保存补充资料，系统会重新核验并继续处理。尚未确认上架。" : "暂不能补充资料，请先提交商品链接，或等待当前处理结束。";
   }
-  if (/^(?:重试|继续制作|重新发送|retry)$/i.test(text)) {
-    const latest = await (await coordinate(env,"/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || ""))).json();
-    if (!latest.key) return "请先发送一个 WB 商品链接。";
-    if (latest.task?.status === "ready") return "该请求的10套图文及压缩包已交付本聊天，无需重试。制作新一批请重新提交商品链接。";
+  const retryMatch = text.match(/^(?:重试|继续制作|重新发送|retry)(?:\s+(?:请求编号\s*[:：]?\s*)?(om_[a-zA-Z0-9_-]+))?[！!。]*$/i);
+  if (retryMatch) {
+    const query = retryMatch[1] ? "/task?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + "&task_id=" + encodeURIComponent(retryMatch[1]) : "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "");
+    const latest = await (await coordinate(env,query)).json();
+    if (!latest.key) return "没有找到本聊天对应的请求记录，不能改用其他批次重试。请提供请求编号让维护者核查。";
+    const prefix = "本次查询：WB 货号 " + latest.task.nmId + "\n请求编号：" + latest.task.task_id + "\n";
+    if (latest.task.status === "ready") {
+      const d=latest.task.details || {};
+      return prefix + (d.delivery_verified && d.delivered_scenes === 10 && d.archive_message_id ? "这条请求的10套图文及压缩包已有交付记录，无需重复发送。" : "这条请求被标记完成，但交付凭据不足，需要维护者核验。") + "图文交付不代表已上架。若您指另一条失败请求，请发送“重试 请求编号”。";
+    }
     const resumed = await coordinate(env,"/retry",{key:latest.key,message_id:messageId});
-    return resumed.ok ? "已恢复该商品请求，已有通过检查的图片会继续使用，完成后回传本聊天。" : "当前请求正在执行，可发送“进度”查看。";
+    return prefix + (resumed.ok ? "已恢复该商品请求，将重新核验已有图片并继续制作，完成后回传本聊天。" : "未启动重复重试，任务状态可能已变化。请发送“进度”查看。");
   }
   if (isListingCommand(text)) {
     const requested = resolveProduct(text);
@@ -474,9 +456,10 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     const quotedTaskId = quotedTaskIdMatch ? quotedTaskIdMatch[1] : null;
     let task = null;
     if (quotedTaskId) {
-      const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&task_id=" + encodeURIComponent(quotedTaskId));
+      const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + "&task_id=" + encodeURIComponent(quotedTaskId));
       if (taskRes.ok) task = (await taskRes.json()).task;
     }
+    if (quotedTaskId && !task) return "未找到本聊天的请求编号 " + quotedTaskId + "，不能用其他批次代替，也不能据此认定已交付。请维护者核查历史记录。";
     if (!task) {
       const { task: latestTask } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + (requested?.nmId ? "&nmid=" + encodeURIComponent(requested.nmId) : ""))).json();
       task = latestTask;
@@ -495,13 +478,20 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     if (/(?:？|\?|为什么|为何|为啥|怎么|哪里|咋|什么原因|怎么回事|可否|是否|能否|好像|似乎|只有|没有|未见|不见|前台|只显示|没显示)/.test(text)) {
       return "识别到商品货号 " + product.nmId + "。如需为该商品制作10套裂变场景图文，请直接发送该货号或商品链接；如需查询状态，请发送“进度”或“为何未上架”。";
     }
+    const targetStoreMatch = text.match(/(?:店铺名|店铺|shop|store)\s*[:：]?\s*([a-zA-Z0-9_-]{2,32})/i) ||
+                             text.match(/\b(RR[0-9]{3})\b/i);
+    const targetStore = targetStoreMatch ? targetStoreMatch[1].toUpperCase() : null;
+    const taskPayload = { task_id: messageId, sender_id: senderId, chat_id: chatId, mode: "creative", ...product };
+    if (targetStore) taskPayload.target_store = targetStore;
     const key = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
-    const response = await coordinate(env, "/put", { key, task: { task_id: messageId, sender_id: senderId, chat_id: chatId, mode: "creative", ...product } });
+    const response = await coordinate(env, "/put", { key, task: taskPayload });
     if (!response.ok) throw new Error("Task persistence failed");
     const h = await health(env);
-    return "已记录商品请求：WB 货号 " + product.nmId + "\n请求编号：" + messageId +
-      "\n当前状态：" + (h.online ? "等待处理，执行服务在线。" : "等待处理，执行服务暂时离线；恢复后会继续处理。") +
+    let ack = "已记录商品请求：WB 货号 " + product.nmId + "\n请求编号：" + messageId;
+    if (targetStore) ack += "\n目标店铺：" + targetStore;
+    ack += "\n当前状态：" + (h.online ? "等待处理，执行服务在线。" : "等待处理，执行服务暂时离线；恢复后会继续处理。") +
       "\n系统会自动读取原图和商品信息，制作10种应用场景的图片、俄语标题和描述，完成后回传本聊天。可发送“进度”查看。";
+    return ack;
   }
   if (/(进度|多久|完成了吗|好了吗|有在执行吗|在做吗|开始了吗|状态|排队|完成了没)/.test(text)) {
     const { task } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || ""))).json();
@@ -569,7 +559,7 @@ export default {
       return j({ status: "online", service: "WB task gateway", queue_backend: "durable-object",
         executor_online: h.online, executor_last_seen: h.last_seen || null,
         generation_enabled: h.online && !!h.capabilities.generation, publishing_enabled: false,
-        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-12-listing-qa1" });
+        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-13-camera-policy1", coordinator_version: h.version || null });
     }
     if (url.pathname.startsWith("/media/") && request.method === "GET") {
       const key = url.pathname.slice("/media/".length);
@@ -696,7 +686,7 @@ export default {
         } while (cursor);
         return coordinate(env, "/import", { tasks });
       }
-      const routes = { "/api/tasks/claim": "/claim", "/api/tasks/update": "/update", "/api/tasks/retry": "/retry", "/api/tasks/diagnostic": "/diagnostic" };
+      const routes = { "/api/tasks/restore-failure": "/restore-failure", "/api/tasks/claim": "/claim", "/api/tasks/update": "/update", "/api/tasks/retry": "/retry", "/api/tasks/diagnostic": "/diagnostic" };
       if (routes[url.pathname] && request.method === "POST") {
         let payload;
         try { payload = await request.json(); } catch { return j({ error: "Invalid JSON" }, 400); }

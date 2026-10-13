@@ -4,9 +4,10 @@ import re
 from pathlib import Path
 
 ISSUES = {
-    'camera_angle': r'camera angle|front-facing|predominantly frontal|framing',
-    'label_distortion': r'garbled|distorted characters|typography|altered.*artwork|label.*distort',
+    'camera_angle': r'camera angle|front-facing|predominantly frontal|ракурс|угол.*съем',
+    'label_distortion': r'garbled|distorted.*(?:characters|text|label)|typography|altered.*artwork|label.*distort|promotional overlay|advertisement.*(?:carton|packag)',
     'extra_product': r'extra (?:product )?unit|additional (?:product )?unit',
+    'composition_mismatch': r'carton.*behind.*bottle|primary subject|main subject|composition verification failed|copied.*composition',
     'missing_packaging': r'box.*missing|missing.*(?:box|packag)',
 }
 
@@ -56,6 +57,8 @@ def failure_details(exc, output=None):
                                 if re.search(pattern, issue, re.I): codes.add(code)
                 except (OSError, ValueError, TypeError): pass
             result.update(completed=accepted, image_attempts=attempts, issue_codes=sorted(codes))
+        elif re.search(r'Native generation.*(?:HTTP 404|model unavailable)', line):
+            result['reason_code'] = 'generation_model_unavailable'
         elif re.search(r'HTTP (429|5\d\d)|timeout|aborted', line, re.I):
             result['reason_code'] = 'generation_service_unavailable'
         elif 'authentication' in line.lower() or 'login missing' in line.lower() or 'HTTP 401' in line:

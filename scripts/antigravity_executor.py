@@ -39,9 +39,11 @@ class GatewayError(RuntimeError):
 
 def load_config(path=CONFIG_PATH):
     config = json.loads(Path(path).read_text()) if Path(path).exists() else {}
-    for key in ("GATEWAY_URL", "EXECUTOR_SECRET", "OUTPUT_ROOT", "FACTS_ROOT", "FISSION_GENERATOR_CMD"):
+    for key in ("GATEWAY_URL", "EXECUTOR_SECRET", "OUTPUT_ROOT", "FACTS_ROOT", "FISSION_GENERATOR_CMD", "STORE_NAME", "WB_STORE"):
         if os.environ.get(key):
             config[key] = os.environ[key]
+    if os.environ.get("WB_STORE"):
+        config["STORE_NAME"] = os.environ["WB_STORE"]
     config.setdefault("GATEWAY_URL", "https://wb-bot.diytale.com")
     if not config.get("EXECUTOR_SECRET"):
         raise GatewayError("EXECUTOR_SECRET must be configured outside source code")
@@ -247,10 +249,15 @@ def validate_generated(generated, task, facts):
     return generated
 
 
-def execute_task(task, gateway, config, worker_id):
-    claim = gateway.call("/api/tasks/claim", {"key": task["key"], "worker_id": worker_id})
+def execute_task(task, gateway, config, worker_id, store=None):
+    claim_payload = {"key": task["key"], "worker_id": worker_id}
+    if store:
+        claim_payload["store"] = store
+    claim = gateway.call("/api/tasks/claim", claim_payload)
     claimed = claim["task"]
     identity = {"key": task["key"], "lease_id": claimed["lease_id"], "worker_id": worker_id}
+    if store:
+        identity["store"] = store
     stopped = threading.Event()
     lease = LeaseSession(gateway, claimed)
     lost = lease.lost
@@ -339,20 +346,27 @@ def execute_task(task, gateway, config, worker_id):
 
 def capabilities(config):
     return {"generation": bool(config.get("FISSION_GENERATOR_CMD")), "publishing": False,
-            "source_validation": True, "asset_export": True}
+            "source_validation": True, "asset_export": True,
+            "bound_store": config.get("STORE_NAME")}
 
 
 def run_daemon(config, interval=5, run_once=False):
     gateway = Gateway(config)
-    worker_id = socket.gethostname() + "-" + str(os.getpid())
-    logger.info("Executor started; interval=%s seconds", interval)
+    store = config.get("STORE_NAME")
+    if store:
+        store = str(store).upper()
+        worker_id = f"executor-{store}-{socket.gethostname()}-{os.getpid()}"
+    else:
+        worker_id = f"{socket.gethostname()}-{os.getpid()}"
+    logger.info("Executor started; store=%s; worker_id=%s; interval=%s seconds", store or "all", worker_id, interval)
     while True:
         try:
-            gateway.call("/api/executor/heartbeat", {"worker_id": worker_id, "capabilities": capabilities(config)})
-            tasks = gateway.call("/api/tasks?status=waiting_executor").get("tasks", []) if capabilities(config)["generation"] else []
+            gateway.call("/api/executor/heartbeat", {"worker_id": worker_id, "store": store, "capabilities": capabilities(config)})
+            query = "/api/tasks?status=waiting_executor" + (f"&store={store}" if store else "")
+            tasks = gateway.call(query).get("tasks", []) if capabilities(config)["generation"] else []
             for task in tasks:
                 try:
-                    execute_task(task, gateway, config, worker_id)
+                    execute_task(task, gateway, config, worker_id, store=store)
                 except GatewayError:
                     logger.warning("Task not claimed; another executor may own it")
         except GatewayError as exc:
@@ -366,12 +380,15 @@ def main():
     parser = argparse.ArgumentParser(description="Persistent WB task executor")
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     parser.add_argument("--interval", type=int, default=5)
+    parser.add_argument("--store", type=str, default=None, help="Bind executor to a specific WB store (e.g. RR010)")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     if args.interval < 1:
         parser.error("interval must be positive")
     try:
         config = load_config(args.config)
+        if args.store:
+            config["STORE_NAME"] = args.store
     except (ValueError, OSError, GatewayError) as exc:
         parser.exit(2, f"Cannot load executor configuration: {type(exc).__name__}\n")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

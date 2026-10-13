@@ -485,11 +485,11 @@ test('natural listing questions explain why task is not yet listed and provide s
   await f.call('/credentials', { sender_id: 'user_wb_list', credentials: { shop_name: 'RR010', warehouse_id: '2200772', api_token: validJwt } });
 
   // Create a ready task
-  await f.call('/put', { key: 'task:user_wb_list:ready_task', task: { task_id: 'om_x100b63f4aa3d14a0b296c89eebe9ba6', sender_id: 'user_wb_list', chat_id: 'chat_list', nmId: '1879785812' } });
-  const t = await f.storage.get('task:user_wb_list:ready_task');
+  await f.call('/put', { key: 'task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6', task: { task_id: 'om_x100b63f4aa3d14a0b296c89eebe9ba6', sender_id: 'user_wb_list', chat_id: 'chat_list', nmId: '1879785812' } });
+  const t = await f.storage.get('task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6');
   t.status = 'ready';
   t.summary = '10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。';
-  await f.storage.put('task:user_wb_list:ready_task', t);
+  await f.storage.put('task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6', t);
 
   // 1. Simple query: "为何未上架"
   const reply = await buildReply('为何未上架', 'user_wb_list', 'm_why', f.env, 'chat_list');
@@ -527,11 +527,11 @@ test('natural listing questions explain why task is not yet listed and provide s
 
   // 3. Command: "上架" or "确认上架"
   const cmdReply = await buildReply('确认上架', 'user_wb_list', 'm_cmd', f.env, 'chat_list');
-  assert.match(cmdReply, /已确认上架指令，店铺授权核验通过/);
-  assert.match(cmdReply, /RR010/);
-  assert.match(cmdReply, /2200772/);
-  assert.match(cmdReply, /10 款全新场景同款/);
-  assert.match(cmdReply, /每款 5 件/);
+  assert.match(cmdReply, /没有创建上架任务/);
+
+
+
+
 
   // 4. Inquisitive phrase with product number does NOT create task
   const askWithNmId = 'WB 货号 1879785812 能否帮我看看？';
@@ -541,10 +541,10 @@ test('natural listing questions explain why task is not yet listed and provide s
 
   // 5. Explicit user input from screenshot: "WB 货号 1879785812 继续上架"
   const continueCmdReply = await buildReply('WB 货号 1879785812 继续上架', 'user_wb_list', 'm_continue', f.env, 'chat_list');
-  assert.match(continueCmdReply, /已确认上架指令，店铺授权核验通过/);
+  assert.match(continueCmdReply, /没有创建上架任务/);
   assert.match(continueCmdReply, /1879785812/);
-  assert.match(continueCmdReply, /RR010/);
-  assert.match(continueCmdReply, /2200772/);
+
+
   assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore); // No duplicate task!
 
   // 6. Storefront inquiry about 1 picture and no detail page
@@ -552,4 +552,88 @@ test('natural listing questions explain why task is not yet listed and provide s
   assert.match(storefrontReply, /前台图文说明/);
   assert.match(storefrontReply, /10套全新/);
   assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore);
+});
+
+test('missing explicit task never falls back to an older delivered batch',async()=>{
+ const f=fixture();await put(f);const old=await f.storage.get('task:user:message');old.status='ready';await f.storage.put('task:user:message',old);
+ for(const q of ['为什么失败 请求编号 om_missing1234567890','为何未上架 请求编号 om_missing1234567890','重试 om_missing1234567890']){
+  const reply=await buildReply(q,'user','q',f.env);assert.match(reply,/未找到|没有找到/);assert.doesNotMatch(reply,/无需重试|已经交付|已恢复/);
+ }
+});
+test('product lookup selects newest failure over an older ready batch',async()=>{
+ const f=fixture();
+ for(const [id,nmId,status,time] of [['old','1879785812','ready',1],['new','1879785812','failed',2],['other','1520898783','ready',3]]){
+  const t={task_id:id,sender_id:'user',chat_id:'a',nmId,status,timestamp:time};await f.storage.put('task:user:'+id,t);
+ }
+ await f.storage.put('latest:user:a','task:user:other');
+ assert.equal((await(await f.call('/latest?sender=user&chat=a&nmid=1879785812')).json()).task.task_id,'new');
+ assert.equal((await(await f.call('/latest?sender=user&chat=a&nmid=111111111')).json()).task,null);
+});
+test('exact task lookup is chat scoped and history cannot be deleted',async()=>{
+ const f=fixture();await f.call('/put',{key:'task:user:om_existing123456789',task:{task_id:'om_existing123456789',sender_id:'user',chat_id:'a',nmId:'1879785812'}});
+ assert.equal((await(await f.call('/task?sender=user&task_id=om_existing123456789&chat=b')).json()).task,null);
+ const r=await f.env.TASK_COORDINATOR.get().fetch(new Request('https://coordinator/task?key=task:user:om_existing123456789',{method:'DELETE'}));
+ assert.equal(r.status,409);assert.ok(await f.storage.get('task:user:om_existing123456789'));
+});
+test('ready retry includes its identity and does not claim unverified delivery or mutate it',async()=>{
+ const f=fixture();await put(f);const t=await f.storage.get('task:user:message');t.status='ready';await f.storage.put('task:user:message',t);
+ const reply=await buildReply('重试','user','q',f.env);assert.match(reply,/请求编号：message/);assert.match(reply,/交付凭据不足/);
+ assert.equal((await f.call('/retry',{key:'task:user:message'})).status,409);
+});
+
+test('historical restore is authenticated, failed only and cannot overwrite tasks',async()=>{
+ const f=fixture(), task={sender_id:'ou_test',chat_id:'oc_test',task_id:'om_test',nmId:'1879785812',timestamp:1,status:'waiting_executor',credentials:{token:'SECRET'}};
+ assert.equal((await worker.fetch(new Request('https://example.test/api/tasks/restore-failure',{method:'POST',body:JSON.stringify({task})}),f.env,ctx)).status,401);
+ assert.equal((await worker.fetch(authRequest('/api/tasks/restore-failure',{task}),f.env,ctx)).status,200);
+ const restored=await f.storage.get('task:ou_test:om_test');assert.equal(restored.status,'failed');assert.equal(restored.credentials,undefined);
+ assert.equal((await worker.fetch(authRequest('/api/tasks/restore-failure',{task}),f.env,ctx)).status,409);
+ assert.equal((await(await f.call('/list?status=waiting_executor')).json()).count,0);
+});
+
+test('multi-store task routing, executor isolation and store credentials lookup', async () => {
+  const f = fixture();
+  await f.call('/credentials', { sender_id: 'user_admin', credentials: { shop_name: 'RR010', warehouse_id: '2200772', api_token: 'token_rr010' } });
+  await f.call('/credentials', { sender_id: 'user_admin', credentials: { shop_name: 'RR008', warehouse_id: '1100553', api_token: 'token_rr008' } });
+
+  const creds10 = await (await f.call('/credentials?store=RR010')).json();
+  assert.equal(creds10.credentials.shop_name, 'RR010');
+  assert.equal(creds10.credentials.warehouse_id, '2200772');
+
+  const creds08 = await (await f.call('/credentials?store=RR008')).json();
+  assert.equal(creds08.credentials.shop_name, 'RR008');
+  assert.equal(creds08.credentials.warehouse_id, '1100553');
+
+  await f.call('/heartbeat', { worker_id: 'exec_rr010', store: 'RR010', capabilities: { generation: true } });
+  await f.call('/heartbeat', { worker_id: 'exec_rr008', store: 'RR008', capabilities: { generation: true } });
+
+  const healthRes = await (await f.call('/health')).json();
+  assert.equal(healthRes.online, true);
+  assert.equal(healthRes.active_executors.length, 2);
+  const stores = healthRes.active_executors.map(e => e.store);
+  assert.ok(stores.includes('RR010'));
+  assert.ok(stores.includes('RR008'));
+
+  const reply10 = await buildReply('WB 货号 1879785812 店铺：RR010', 'user_a', 'msg_10', f.env, 'chat_a');
+  assert.match(reply10, /已记录商品请求/);
+  assert.match(reply10, /目标店铺：RR010/);
+
+  const reply08 = await buildReply('WB 货号 1520898783 店铺：RR008', 'user_b', 'msg_08', f.env, 'chat_b');
+  assert.match(reply08, /已记录商品请求/);
+  assert.match(reply08, /目标店铺：RR008/);
+
+  const list10 = await (await f.call('/list?status=waiting_executor&store=RR010')).json();
+  assert.equal(list10.tasks.length, 1);
+  assert.equal(list10.tasks[0].nmId, '1879785812');
+
+  const list08 = await (await f.call('/list?status=waiting_executor&store=RR008')).json();
+  assert.equal(list08.tasks.length, 1);
+  assert.equal(list08.tasks[0].nmId, '1520898783');
+
+  const badClaim = await f.call('/claim', { key: 'task:user_a:msg_10', worker_id: 'exec_rr008', store: 'RR008' });
+  assert.equal(badClaim.status, 409);
+
+  const goodClaim = await f.call('/claim', { key: 'task:user_a:msg_10', worker_id: 'exec_rr010', store: 'RR010' });
+  assert.equal(goodClaim.status, 200);
+  const claimedTask = (await goodClaim.json()).task;
+  assert.equal(claimedTask.claimed_by_store, 'RR010');
 });
