@@ -6,7 +6,7 @@ const coordinatorSource = await readFile(new URL("../cloudflare-worker/src/task-
 const coordinatorURL = "data:text/javascript;base64," + Buffer.from(coordinatorSource).toString("base64");
 const { TaskCoordinator } = await import(coordinatorURL);
 const source = (await readFile(new URL("../cloudflare-worker/src/index.js", import.meta.url), "utf8")).replace('"./task-coordinator.js"', JSON.stringify(coordinatorURL));
-const { default: worker, resolveProduct, buildReply, handleFeishuEvent } = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
+const { default: worker, resolveProduct, buildReply, handleFeishuEvent, isFailureQuestion, isCredentialQuestion, parseJwtClaims, verifyAndReportCredentials } = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 
 class Storage {
   data = new Map();
@@ -293,4 +293,128 @@ test('authenticated task snapshots cannot be cached by intermediaries',async()=>
  const response=await worker.fetch(authRequest('/api/tasks'),f.env,ctx);
  assert.match(response.headers.get('Cache-Control'),/no-store/);
  assert.equal(response.headers.get('Vary'),'Authorization');
+});
+
+test('natural failure questions explain the current chat task without creating or retrying it',async()=>{
+  const f=fixture();await f.call('/put',{key:'task:user:failed',task:{task_id:'failed',sender_id:'user',chat_id:'chat-a',nmId:'1879785812'}});
+  const t=await f.storage.get('task:user:failed');t.status='failed';t.summary='private SECRET';t.details={reason_code:'image_quality_failed',failed_image:3,completed:2,issue_codes:['camera_angle','extra_product','SECRET']};await f.storage.put('task:user:failed',t);
+  for(const question of ['什么原因处理失败','为什么失败','这个怎么回事','失败了怎么办','WB 货号 1879785812 为什么失败']){
+    const q=question;
+    assert.equal(isFailureQuestion(q),true);
+    const reply=await buildReply(q,'user','query',f.env,'chat-a');
+    assert.match(reply,/第3张/);assert.match(reply,/2\/10/);assert.match(reply,/额外商品/);assert.doesNotMatch(reply,/SECRET/);
+  }
+  assert.equal((await f.storage.list({prefix:'task:'})).size,1);assert.equal((await f.storage.get('task:user:failed')).status,'failed');
+  assert.match(await buildReply('为什么失败','user','query',f.env,'chat-b'),/没有找到/);
+});
+test('unknown historical failures are explicitly unknown and progress also explains failures',async()=>{
+  const f=fixture();await put(f);const t=await f.storage.get('task:user:message');t.status='failed';t.details={error_type:'GatewayError'};await f.storage.put('task:user:message',t);
+  assert.match(await buildReply('什么原因处理失败','user','q',f.env),/没有保存具体错误/);
+  assert.match(await buildReply('进度','user','q2',f.env),/不能直接归因/);
+});
+test('maintenance diagnostic is bounded and never changes active task or triggers delivery',async()=>{
+  const f=fixture();await put(f);assert.equal((await f.call('/diagnostic',{key:'task:user:message',details:{reason_code:'image_quality_failed'}})).status,409);
+  const t=await f.storage.get('task:user:message');t.status='failed';await f.storage.put('task:user:message',t);
+  assert.equal((await f.call('/diagnostic',{key:'task:user:message',details:{reason_code:'image_quality_failed',issue_codes:['SECRET']}})).status,400);
+  assert.equal((await f.call('/diagnostic',{key:'task:user:message',details:{reason_code:'image_quality_failed',completed:2,failed_image:3}})).status,200);
+  assert.equal((await f.storage.get('task:user:message')).status,'failed');
+  assert.equal((await worker.fetch(new Request('https://example.test/api/tasks/diagnostic',{method:'POST',body:'{}'}),f.env,ctx)).status,401);
+});
+
+ test('authenticated gateway routes failure annotation to the coordinator',async()=>{
+  const f=fixture();await put(f);const t=await f.storage.get('task:user:message');t.status='failed';await f.storage.put('task:user:message',t);
+  const response=await worker.fetch(authRequest('/api/tasks/diagnostic',{key:'task:user:message',details:{reason_code:'image_quality_failed',completed:2,failed_image:3}}),f.env,ctx);
+  assert.equal(response.status,200);assert.equal((await f.storage.get('task:user:message')).details.failed_image,3);
+ });
+
+
+test('isCredentialQuestion detects various natural credential and authorization inquiries', () => {
+  assert.equal(isCredentialQuestion('请核验与授权刚才上传的店铺WB API 令牌'), true);
+  assert.equal(isCredentialQuestion('核验令牌'), true);
+  assert.equal(isCredentialQuestion('验证令牌'), true);
+  assert.equal(isCredentialQuestion('授权令牌'), true);
+  assert.equal(isCredentialQuestion('检查WB API'), true);
+  assert.equal(isCredentialQuestion('店铺授权状态'), true);
+  assert.equal(isCredentialQuestion('我的API令牌有效吗'), true);
+  assert.equal(isCredentialQuestion('查看店铺信息'), true);
+  assert.equal(isCredentialQuestion('查询店铺凭据'), true);
+  assert.equal(isCredentialQuestion('核验授权'), true);
+  // Non-credential inquiries
+  assert.equal(isCredentialQuestion('API令牌：dummy'), false);
+  assert.equal(isCredentialQuestion('店铺名：RR010'), false);
+  assert.equal(isCredentialQuestion('进度'), false);
+  assert.equal(isCredentialQuestion('1520898783'), false);
+  assert.equal(isCredentialQuestion('什么原因处理失败'), false);
+  assert.equal(isCredentialQuestion('资料:{"brand":"test"}'), false);
+});
+
+test('parseJwtClaims correctly parses claims and handles invalid tokens', () => {
+  const validJwt = 'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAzdjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODA3NDU4NzY3LCJmb3IiOiJzZWxmIiwiaWQiOiIwMWExMjkxNy03YWI4LTdjMTYtYTc4Zi02ZjM0ZWZhNWE1MGIiLCJpaWQiOjMxODk0MTU5OSwib2lkIjoyNTAyMDIyNTIsInMiOjgxNjYyLCJzaWQiOiI3NDVhMTVmZS04N2Y0LTQ2MTUtYTU3Zi02NGQyNTYzMzVjMWUiLCJ0IjpmYWxzZSwidWlkIjozMTg5NDE1OTl9.sig';
+  const claims = parseJwtClaims(validJwt);
+  assert.equal(claims.oid, 250202252);
+  assert.equal(claims.exp, 1807458767);
+  assert.equal(claims.t, false);
+  assert.equal(parseJwtClaims('invalid'), null);
+  assert.equal(parseJwtClaims(''), null);
+});
+
+test('natural credential inquiries report verified store credentials and token status without link fallback', async () => {
+  const f = fixture();
+  // 1. When no credentials exist:
+  const noCredsReply = await buildReply('请核验与授权刚才上传的店铺WB API 令牌', 'new_user', 'm1', f.env);
+  assert.match(noCredsReply, /尚未找到您上传的店铺凭据/);
+
+  // 2. When valid credentials are stored (with mocked successful WB API probe):
+  const validJwt = 'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAzdjEiLCJ0eXAiOiJKV1QifQ.eyJhY2MiOjMsImVudCI6MSwiZXhwIjoxODA3NDU4NzY3LCJmb3IiOiJzZWxmIiwiaWQiOiIwMWExMjkxNy03YWI4LTdjMTYtYTc4Zi02ZjM0ZWZhNWE1MGIiLCJpaWQiOjMxODk0MTU5OSwib2lkIjoyNTAyMDIyNTIsInMiOjgxNjYyLCJzaWQiOiI3NDVhMTVmZS04N2Y0LTQ2MTUtYTU3Zi02NGQyNTYzMzVjMWUiLCJ0IjpmYWxzZSwidWlkIjozMTg5NDE1OTl9.sig';
+  await f.call('/credentials', { sender_id: 'user_wb', credentials: { shop_name: 'RR010', warehouse_id: '2200772', api_token: validJwt } });
+
+  const saved = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/api/v3/warehouses')) {
+        return Response.json([{ id: 2200772, name: '我的仓库' }]);
+      }
+      return new Response('{}');
+    };
+
+    // Test exact phrase from user screenshot:
+    const exactReply = await buildReply('请核验与授权刚才上传的店铺WB API 令牌', 'user_wb', 'm2', f.env);
+    assert.match(exactReply, /已核验您的店铺凭据与授权状态/);
+    assert.match(exactReply, /RR010/);
+    assert.match(exactReply, /2200772/);
+    assert.match(exactReply, /已连接在线：我的仓库/);
+    assert.match(exactReply, /全权限读写/);
+    assert.match(exactReply, /2027/);
+    assert.match(exactReply, /官方接口通信正常/);
+    assert.doesNotMatch(exactReply, /请发送一个 WB 商品链接/);
+    assert.doesNotMatch(exactReply, /sig/); // Never leaks raw token
+
+    // Test other natural queries:
+    for (const q of ['核验令牌', '店铺授权状态', '检查API令牌', '查询店铺凭据', '查看店铺信息']) {
+      const reply = await buildReply(q, 'user_wb', 'm3', f.env);
+      assert.match(reply, /已核验您的店铺凭据与授权状态/);
+      assert.match(reply, /RR010/);
+      assert.match(reply, /全权限读写/);
+      assert.doesNotMatch(reply, /请发送一个 WB 商品链接/);
+    }
+  } finally {
+    globalThis.fetch = saved;
+  }
+
+  // 3. When token is rejected by WB API (HTTP 401):
+  const saved401 = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response('Unauthorized', { status: 401 });
+    const rejReply = await buildReply('核验令牌', 'user_wb', 'm4', f.env);
+    assert.match(rejReply, /平台拒绝授权（401\/403/);
+  } finally {
+    globalThis.fetch = saved401;
+  }
+
+  // 4. When token is expired:
+  const expiredPayload = Buffer.from(JSON.stringify({ exp: 1000000000 })).toString('base64');
+  const expiredJwt = 'eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.' + expiredPayload + '.sig';
+  await f.call('/credentials', { sender_id: 'user_exp', credentials: { shop_name: 'EXPIRED_SHOP', warehouse_id: '123', api_token: expiredJwt } });
+  const expReply = await buildReply('核验令牌', 'user_exp', 'm5', f.env);
+  assert.match(expReply, /已过期/);
 });

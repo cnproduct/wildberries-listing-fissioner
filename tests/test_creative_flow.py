@@ -123,6 +123,20 @@ class CreativeTests(unittest.TestCase):
         self.data['items'][8]['title']='Товар 8'
         build_creative_bundle(self.data,self.root/'bad')
 
+    def test_source_gallery_retains_eight_references_instead_of_first_two(self):
+        from scripts import wb_source
+        class Gateway:
+            def call(self,*args):return {'product':{'id':1879785812,'name':'Original','pics':8}}
+        routing={'recommend':{'mediabasket_route_map':[{'method':'mod','hosts':[{'host':'mow-basket-cdn-34.geobasket.ru'}]}]}}
+        def resource(config,url):
+            if url.endswith('/upstreams'):return json.dumps(routing).encode()
+            if url.endswith('card.json'):return json.dumps({'nm_id':1879785812,'imt_name':'Original'}).encode()
+            return (self.root/'0.png').read_bytes()
+        with patch.object(wb_source,'resource',side_effect=resource):
+            _,facts=acquire_source({'nmId':'1879785812'},Gateway(),{},self.root,{})
+        self.assertEqual(len(facts['source_images']),8)
+        self.assertTrue(facts['source_images'][-1].endswith('original-8.webp'))
+
     def test_bundle_can_recover_after_directory_commit_before_pointer_saved(self):
         first=build_creative_bundle(self.data,self.root/'bundle')
         self.assertEqual(build_creative_bundle(self.data,self.root/'bundle'),first)

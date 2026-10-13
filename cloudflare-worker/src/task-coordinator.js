@@ -8,7 +8,7 @@ const LEASE_MS = 180000;
 const MAX_ATTEMPTS = 3;
 // Task responses never carry seller credentials, including legacy records.
 const publicTask = task => { if (!task) return task; const { credentials, ...safe } = task; return safe; };
-const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization"} });
+const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-11-diagnostics3"} });
 const latestKey = (sender, chat) => 'latest:' + sender + (chat ? ':' + encodeURIComponent(chat) : '');
 async function latestInChat(storage, sender, chat) {
   let key = await storage.get(latestKey(sender, chat));
@@ -36,6 +36,7 @@ export class TaskCoordinator {
       if (ACTIVE.has(task.status) && (!task.lease_expires_at || task.lease_expires_at <= now)) {
         task.status = (task.attempts || 0) >= MAX_ATTEMPTS ? "failed" : "waiting_executor";
         task.summary = task.status === "failed" ? "执行多次中断，已停止重试，请检查执行服务。" : "上次执行中断，请求已恢复到待处理队列。";
+        if (task.status === 'failed') task.details = {...task.details, reason_code:'lease_expired',published:false};
         task.updated_at = now;
         delete task.lease_id; delete task.worker_id; delete task.lease_expires_at;
         await tx.put(key, task);
@@ -137,6 +138,30 @@ export class TaskCoordinator {
         await tx.put(body.key, task);
         await tx.put(latestKey(task.sender_id, task.chat_id), body.key);
         return j({ task: publicTask(task), created: true });
+      });
+    }
+    if (url.pathname === '/diagnostic' && request.method === 'POST') {
+      // Authenticated maintenance may annotate a terminal failure; never change
+      // task ownership, status, customer identity or trigger any message.
+      const allowed=['image_quality_failed','generation_timeout','generation_service_unavailable','generation_auth_failed','executor_auth_failed','connection_failed','product_validation_failed','scene_plan_invalid','generator_not_configured','generation_failed','lease_expired','unknown_failure'];
+      const d=body.details || {};
+      if (!allowed.includes(d.reason_code)) return j({error:'Invalid diagnostic'},400);
+      const clean={reason_code:d.reason_code,published:false};
+      for (const k of ['completed','failed_image','image_attempts','total']) {
+        if (d[k]!==undefined) {
+          if (!Number.isInteger(d[k]) || d[k]<0 || d[k]>10) return j({error:'Invalid diagnostic count'},400);
+          clean[k]=d[k];
+        }
+      }
+      if (d.issue_codes!==undefined) {
+        if (!Array.isArray(d.issue_codes) || d.issue_codes.some(x=>!['camera_angle','label_distortion','extra_product','missing_packaging'].includes(x))) return j({error:'Invalid issue code'},400);
+        clean.issue_codes=[...new Set(d.issue_codes)];
+      }
+      return this.storage.transaction(async tx=>{
+        const task=await tx.get(body.key);
+        if (!task || task.status!=='failed') return j({error:'Only failed tasks can be annotated'},409);
+        task.details={...task.details,...clean};task.diagnostic_updated_at=now;
+        await tx.put(body.key,task);return j({code:0});
       });
     }
     if (url.pathname === "/import" && request.method === "POST") {

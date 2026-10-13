@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.creative_bundle import build_creative_bundle
 from scripts.feishu_delivery import FeishuDelivery, DeliveryError
 from scripts.wb_source import acquire_source
+from scripts.failure_diagnostics import failure_details, failure_summary
 
 try:
     from .runtime_files import write_json, read_cache
@@ -198,7 +199,8 @@ def run_generator(task, facts, evidence, output, command, progress=None, check_l
     payload = {"task": {k: task.get(k) for k in ("task_id", "nmId", "url")},
                "facts": facts, "evidence": evidence, "output_dir": str(output)}
     deadline = time.monotonic() + 3600
-    with (output / 'generator.err.log').open('a') as error_log:
+    with os.fdopen(os.open(output / 'generator.err.log', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as error_log:
+        os.fchmod(error_log.fileno(), 0o600)
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_log,
                                    text=True, cwd=output, env={**os.environ, **({"ANTIGRAVITY_ACCOUNT":account} if account else {})})
         last_progress = None
@@ -325,8 +327,8 @@ def execute_task(task, gateway, config, worker_id):
         logger.error("Task execution failed: %s", type(exc).__name__)
         if not lost.is_set():
             try:
-                update("failed", "处理未完成，请检查商品资料或生成服务；没有确认上架。",
-                       {"error_type": type(exc).__name__, "published": False})
+                diagnostic = failure_details(exc, locals().get('output'))
+                update("failed", failure_summary(diagnostic), diagnostic)
             except GatewayError:
                 logger.error("Cannot update failed task; its lease will be recovered")
         return "failed"

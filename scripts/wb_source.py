@@ -141,7 +141,9 @@ def acquire_source(task, gateway, config, output, facts):
     if selling.get('brand_name'):
         facts.setdefault('brand', selling['brand_name'])
     originals = []
-    for index in range(1, min(max(int((product or {}).get('pics',2)),1),2) + 1):
+    # Review the gallery's different roles instead of discarding everything after photo 2.
+    available = (product or {}).get('pics') or card.get('media', {}).get('photo_count') or 2
+    for index in range(1, min(max(int(available),1),8) + 1):
         url = root + f'images/big/{index}.webp'
         payload = resource(config, url)
         if not payload:

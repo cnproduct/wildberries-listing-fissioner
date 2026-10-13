@@ -152,7 +152,7 @@ def upload_card_media(token, nm_id, image_paths):
     return len(image_paths)
 
 
-def execute_upload(payload, subject_id, token, image_paths_per_card, *, authorized=False, checkpoint=None):
+def execute_upload(payload, subject_id, token, image_paths_per_card, *, authorized=False, checkpoint=None, expected_images_per_card=8):
     if authorized is not True or payload.get('facts_verified') is not True or not checkpoint:
         raise ValueError('Explicit publishing authorization, verified facts and private checkpoint required')
     n=len(payload.get('items',[]))
@@ -162,7 +162,11 @@ def execute_upload(payload, subject_id, token, image_paths_per_card, *, authoriz
     if not isinstance(image_paths_per_card,dict) or set(image_paths_per_card)!=set(vcs):
         raise ValueError('Images must cover every vendor code')
     image_hashes={}
+    if isinstance(expected_images_per_card,bool) or not isinstance(expected_images_per_card,int) or not 1<=expected_images_per_card<=30:
+        raise ValueError('Invalid expected gallery size')
     for vc, paths in image_paths_per_card.items():
+        if len(paths)!=expected_images_per_card:
+            raise ValueError('Every listing requires the complete planned gallery (default: eight images)')
         _validate_images(paths)
         image_hashes[vc]=[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths]
     fingerprint=hashlib.sha256(json.dumps({'payload':payload,'subject':subject_id,'images':image_hashes,'credential_binding':hashlib.sha256(token.encode()).hexdigest()},sort_keys=True).encode()).hexdigest()

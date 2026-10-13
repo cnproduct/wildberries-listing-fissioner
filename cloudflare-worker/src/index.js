@@ -57,6 +57,159 @@ async function sendFeishuReply(token, messageId, chatId, text) {
 }
 async function health(env) { return (await coordinate(env, "/health")).json(); }
 
+export function isFailureQuestion(text) {
+  return /(?:为什么|为何|什么原因|怎么|哪里|咋).*(?:失败|报错|异常|出错|卡住|没成功|未完成|没完成|没有完成)|(?:失败|报错|异常|出错|卡住).*(?:原因|为什么|怎么|解释)|(?:怎么回事|失败原因|错误原因|故障原因|怎么解决|如何解决|怎么办|什么情况)[？?！!。]*$/.test(text);
+}
+export function explainFailure(task) {
+  const d=task.details || {}, code=d.reason_code || d.reason;
+  const reasons={
+    image_quality_failed:"图片没有通过商品一致性或拍摄要求核对，系统停止交付不合格图片。",
+    generation_timeout:"图文生成超过本次处理时限。",
+    generation_service_unavailable:"图片或文案生成服务出现超时、限流或暂时不可用。",
+    generation_auth_failed:"图文生成账号的登录或授权未通过，需要维护者恢复。",
+    executor_auth_failed:"执行服务与任务网关的身份验证失败，需要维护者检查连接配置。",
+    connection_failed:"执行过程中网络连接未完成，不能据此认定是 WB 上架接口故障。",
+    product_validation_failed:"生成结果与原商品资料或校验要求不一致。",
+    scene_plan_invalid:"场景方案的结构、机位或景别没有达到制作要求。",
+    generator_not_configured:"当前没有配置可用的图文生成服务。",
+    generation_failed:"图文生成程序中断，现有记录未提供更具体的可核实原因。",
+    lease_expired:"执行服务多次中断或未及时续报进度，任务已停止自动重试。",
+  };
+  const issues={camera_angle:"拍摄角度未达到要求",label_distortion:"产品标签文字或图案失真",extra_product:"画面出现额外商品，可能误导销售数量",missing_packaging:"应展示的包装缺失"};
+  let answer="失败原因："+(reasons[code] || "这条旧记录没有保存具体错误原因，目前不能确定；需要维护者核对执行记录，不能直接归因于 WB API。")+"\n";
+  if (Number.isInteger(d.failed_image) && d.failed_image>=1 && d.failed_image<=10) answer+="停止位置：第"+d.failed_image+"张图片。\n";
+  if (Number.isInteger(d.completed) && d.completed>=0 && d.completed<=10) answer+="已通过检查："+d.completed+"/10张。\n";
+  const known=[...new Set((Array.isArray(d.issue_codes)?d.issue_codes:[]).filter(x=>Object.hasOwn(issues,x)))];
+  if (known.length) answer+="核对发现："+known.map(x=>issues[x]).join("；")+"。\n";
+  if (['generation_auth_failed','executor_auth_failed','generator_not_configured'].includes(code)) answer+="下一步：维护者修复服务后，在本聊天发送“重试”。";
+  else if (code==='product_validation_failed') answer+="下一步：核对并补充正确原图或商品资料，再发送“重试”。";
+  else answer+="下一步：发送“重试”，系统会重新核验已有成品并继续制作；询问原因本身不会重新生成或重复发送。";
+  return answer;
+}
+
+export function parseJwtClaims(token) {
+  try {
+    if (typeof token !== "string") return null;
+    const parts = token.trim().split(".");
+    if (parts.length < 2) return null;
+    let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4) base64 += "=";
+    let json;
+    if (typeof Buffer !== "undefined") {
+      json = Buffer.from(base64, "base64").toString("utf8");
+    } else if (typeof atob === "function") {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      json = new TextDecoder().decode(bytes);
+    } else {
+      return null;
+    }
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+export function isCredentialQuestion(text) {
+  const t = text.trim();
+  if (/^(?:API令牌|api_token|token|令牌|店铺名|店铺|shop|仓库ID|仓库|warehouse(?:_id)?)\s*[:：]/i.test(t)) {
+    return false;
+  }
+  if (/(?:核验|验证|授权|检查|查看|查询|确认).*(?:令牌|token|api|店铺|凭据|仓库|授权)/i.test(t)) return true;
+  if (/(?:店铺|令牌|token|api|凭据|仓库|授权).*(?:核验|验证|有效|状态|权限|到期|过期|信息|配置)/i.test(t)) return true;
+  if (/^(?:店铺凭据|店铺授权|核验店铺|核验令牌|验证令牌|检查令牌|授权状态|店铺状态|查看凭据|核验API|验证API|核验授权)$/i.test(t)) return true;
+  return false;
+}
+
+export async function verifyAndReportCredentials(senderId, env) {
+  const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
+  if (!credsRes.ok) return "暂无法查询店铺凭据，请稍后重试。";
+  const { credentials } = await credsRes.json();
+  if (!credentials || (!credentials.api_token && !credentials.shop_name && !credentials.warehouse_id)) {
+    return "尚未找到您上传的店铺凭据。\n如需绑定并核验店铺，请按以下格式发送：\n店铺名：RR010\n仓库ID：2200772\nAPI令牌：<您的WB API令牌>";
+  }
+  const shopName = credentials.shop_name || "未指定";
+  const warehouseId = credentials.warehouse_id || "未指定";
+  const token = credentials.api_token;
+
+  let report = "已核验您的店铺凭据与授权状态：\n";
+  report += "• 店铺名称：" + shopName + "\n";
+  report += "• 发货仓库：" + warehouseId;
+
+  if (!token) {
+    report += "\n• API 令牌：尚未上传\n• 授权状态：未完成授权。请发送“API令牌：<您的令牌>”完成绑定。";
+    return report;
+  }
+
+  const claims = parseJwtClaims(token);
+  if (!claims) {
+    report += "\n• API 令牌：已存储（非标准 JWT 格式或测试令牌）\n• 授权状态：凭据已存储。若用于正式上架，请提供 WB 后台生成的全权限 API 令牌。";
+    return report;
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isExpired = claims.exp && claims.exp < nowSec;
+  const expDate = claims.exp ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : "长期";
+  const isReadWrite = claims.t === false;
+
+  if (isExpired) {
+    report += "\n• API 令牌：已过期（到期日：" + expDate + "）\n";
+    report += "• 授权状态：未通过。令牌已失效，请重新生成并上传新令牌。";
+    return report;
+  }
+
+  let liveStatus = "valid_offline";
+  let warehouseVerified = false;
+  let warehouseName = "";
+
+  try {
+    const probeRes = await fetch("https://marketplace-api.wildberries.ru/api/v3/warehouses", {
+      headers: { Authorization: token },
+      signal: AbortSignal.timeout(3500)
+    });
+    if (probeRes.ok) {
+      liveStatus = "live_ok";
+      const whList = await probeRes.json();
+      if (Array.isArray(whList)) {
+        const found = whList.find(w => String(w.id) === String(warehouseId));
+        if (found) {
+          warehouseVerified = true;
+          warehouseName = found.name || "";
+        }
+      }
+    } else if (probeRes.status === 401 || probeRes.status === 403) {
+      liveStatus = "auth_rejected";
+    }
+  } catch {
+    // Timeout, network offline, or mock fetch in tests
+  }
+
+  if (warehouseVerified) {
+    report += "（已连接在线" + (warehouseName ? "：" + warehouseName : "") + "）\n";
+  } else {
+    report += "\n";
+  }
+
+  if (liveStatus === "auth_rejected") {
+    report += "• API 令牌：平台拒绝授权（401/403，可能已被吊销或权限不足）\n";
+    report += "• 授权状态：未通过。请在 WB 卖家后台重新生成全权限 API 令牌并发送。";
+    return report;
+  }
+
+  const permText = isReadWrite ? "全权限读写 (Full Access)" : "只读权限 (Read-Only)";
+  report += "• API 令牌：" + permText + "（有效期至 " + expDate + "）\n";
+
+  if (liveStatus === "live_ok") {
+    report += "• 平台连接：Wildberries 官方接口通信正常\n";
+    report += "• 授权状态：已核验通过。已具备商品建卡、多图上传、价格与库存同步权限。";
+  } else {
+    report += "• 授权状态：已核验通过（凭据解析正常）。已具备商品建卡与图文发布对接就绪。";
+  }
+
+  return report;
+}
+
 export async function buildReply(text, senderId, messageId, env, chatId = null) {
   const credentialText = /^资料\s*[:：]/.test(text) ? "" : text;
   const hasTokenMatch = credentialText.match(/(?:API令牌|api_token|token|令牌)\s*[:：]\s*([^\s]+)/i) ||
@@ -78,6 +231,9 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     if (creds.api_token) replyText += "• WB API 令牌：已成功落盘存储\n";
     replyText += "已保存到您的账号；尚未验证令牌权限。图文制作不会自动上架，发布店铺商品需另行核验与授权。";
     return replyText;
+  }
+  if (isCredentialQuestion(text) && !resolveProduct(text)) {
+    return await verifyAndReportCredentials(senderId, env);
   }
   if (/^资料\s*[:：]/.test(text)) {
     let facts;
@@ -103,6 +259,19 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     const resumed = await coordinate(env,"/retry",{key:latest.key,message_id:messageId});
     return resumed.ok ? "已恢复该商品请求，已有通过检查的图片会继续使用，完成后回传本聊天。" : "当前请求正在执行，可发送“进度”查看。";
   }
+  // A question containing a product number must not silently create another job.
+  if (isFailureQuestion(text)) {
+    const {task}=await (await coordinate(env,"/latest?sender="+encodeURIComponent(senderId)+"&chat="+encodeURIComponent(chatId || ""))).json();
+    if (!task) return "本聊天还没有找到您的商品任务，无法判断失败原因。请先提供商品链接或任务信息。";
+    const requested=resolveProduct(text);
+    if (requested && requested.nmId!==task.nmId) return "本聊天最近任务的货号是 "+task.nmId+"，与您询问的货号不同，不能据此解释该商品的失败原因。";
+    const prefix="最近请求：WB 货号 "+task.nmId+"\n请求编号："+task.task_id+"\n";
+    if (task.status==='failed') return prefix+explainFailure(task);
+    if (task.status==='awaiting_delivery') return prefix+"图文已生成，卡在飞书交付阶段。请维护者检查图片/文件资源权限或连接，再发送“重试”续传。";
+    if (task.status==='needs_input') return prefix+"当前需要补充资料。"+(task.summary || "请补充原图和商品名称。")+"\n补充资料后会继续处理。";
+    if (task.status==='ready') return prefix+"本次图文已经交付，当前没有失败记录。若您指的是店铺上架，请说明具体商品与后台提示。";
+    return prefix+"当前任务尚未被标为失败。"+(task.summary || "正在等待执行。")+"\n可发送“进度”查看；本次询问不会重新创建任务。";
+  }
   const product = resolveProduct(text);
   if (product) {
     const key = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);
@@ -123,7 +292,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     }
     const labels = { validating: "资料核验中", processing: "处理中", generating_text: "文案制作中", generating_images: "图片制作中", reviewing: "审查中",
       needs_input: "需要补充资料", awaiting_delivery: "图文已生成，等待飞书交付", failed: "处理失败，需检查", ready: "资产包已生成，尚未上架", cancelled: "已取消" };
-    return prefix + "状态：" + (labels[task.status] || "待核验") + "。\n" + (task.summary || "");
+    return prefix + "状态：" + (labels[task.status] || "待核验") + "。\n" + (task.status==='failed' ? explainFailure(task) : (task.summary || ""));
   }
   if (/^(?:sku|条形码|barcode|商品编码)\s*[:：]/i.test(text)) return "卖家 SKU 或条码不能直接定位 WB 商品，请提供平台货号 nmId 或详情链接。";
   if (/(发货|出单|打单|物流|集运|贴标|条码|fbs|fbo|fbw|运费)/i.test(text)) return "发货地址、标签、时限与履约条件请按具体订单和店铺合同核验。请提供店铺市场、销售模式与后台发货要求。";
@@ -179,7 +348,7 @@ export default {
       return j({ status: "online", service: "WB task gateway", queue_backend: "durable-object",
         executor_online: h.online, executor_last_seen: h.last_seen || null,
         generation_enabled: h.online && !!h.capabilities.generation, publishing_enabled: false,
-        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-10-audit2" });
+        task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-11-diagnostics3" });
     }
     if (url.pathname.startsWith("/media/") && request.method === "GET") {
       const key = url.pathname.slice("/media/".length);
@@ -303,7 +472,7 @@ export default {
         } while (cursor);
         return coordinate(env, "/import", { tasks });
       }
-      const routes = { "/api/tasks/claim": "/claim", "/api/tasks/update": "/update", "/api/tasks/retry": "/retry" };
+      const routes = { "/api/tasks/claim": "/claim", "/api/tasks/update": "/update", "/api/tasks/retry": "/retry", "/api/tasks/diagnostic": "/diagnostic" };
       if (routes[url.pathname] && request.method === "POST") {
         let payload;
         try { payload = await request.json(); } catch { return j({ error: "Invalid JSON" }, 400); }

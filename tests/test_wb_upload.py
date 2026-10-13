@@ -31,6 +31,13 @@ class UploadTests(unittest.TestCase):
                 self.assertEqual(wb.upload_card_media('dummy',123,[str(photo)]),1)
             args=request.call_args.args
             self.assertEqual(args[1],'/content/v3/media/file');self.assertIn(b'name="uploadfile"',args[2]);self.assertEqual(args[4]['X-Nm-Id'],'123')
+
+    def test_incomplete_new_gallery_rejected_before_any_seller_write(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(wb,'_wb_post') as post:
+            photo=Path(tmp)/'photo.png';Image.new('RGB',(720,960)).save(photo)
+            with self.assertRaisesRegex(ValueError,'complete planned gallery'):
+                wb.execute_upload({**self.payload,'facts_verified':True},360,'test',{'real-1':[str(photo)]},authorized=True,checkpoint=Path(tmp)/'state.json')
+            post.assert_not_called()
     def test_http_200_with_business_error_is_rejected(self):
         class Response:
             status=200
