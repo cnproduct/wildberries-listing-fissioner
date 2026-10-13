@@ -70,15 +70,33 @@ export function isListingQuestion(text) {
   if (/^(?:为何未上架|为什么未上架|为什么还没上架|为何还没上架|为啥还没上架|为啥未上架|怎么还没上架|怎么没上架|为何不上架|为什么不上架|未上架原因|未上架|尚未上架|为何尚未上架|为什么不自动上架|为何不自动上架|何时上架|什么时候上架|怎么上架|如何上架|这个为何未上架)[？?！!。]*$/i.test(t)) return true;
   if (/(?:为何|为什么|怎么|何时|什么时候).*(?:上架|发布到店铺|推到店铺)[？?！!。]*$/i.test(t)) return true;
   if (/(?:为何|为什么|为啥).*(?:不上架|未上架|没上架)/i.test(t)) return true;
+  if (/(?:前台|链接|主图|详情页|多图|图片).*(?:只有|好像|没有|未更新|没更新|看不到|没显示|未显示)/i.test(t)) return true;
+  if (/(?:只有一张图|还是只有一张图|只有单图|没有详情页|详情页好像还是没有|详情页好像没有|没有多张主图|为什么只有一张图|为何只有一张图)[？?！!。]*$/i.test(t)) return true;
   return false;
 }
 
 export function isListingCommand(text) {
   const t = text.trim();
-  return /^(?:确认上架|开始上架|立即上架|执行上架|申请上架|直接上架|上架|发布到店铺|确认发布)[！!。]*$/i.test(t);
+  if (/(?:？|\?|为什么|为何|为啥|怎么|何时|什么时候|能否|是否|可否|哪里|咋|什么原因|好像|只有|没有|未显示|没显示)/.test(t)) {
+    return false;
+  }
+  const cmdVerbs = "(?:确认上架|开始上架|立即上架|执行上架|申请上架|直接上架|继续上架|恢复上架|推进上架|现在上架|进行上架|安排上架|上架|发布到店铺|确认发布|立即发布)";
+  const productPrefix = "(?:(?:wb\\s*)?(?:货号|артикул|articul|nmid)\\s*[:：]?\\s*[0-9]{6,13}|[0-9]{6,13})";
+  const politePrefix = "(?:请(?:帮我)?|帮我|麻烦(?:帮我)?)?";
+
+  // 1. Direct command: "上架", "请上架", "继续上架", "确认发布"
+  if (new RegExp(`^${politePrefix}\\s*${cmdVerbs}[！!。]*$`, "i").test(t)) return true;
+
+  // 2. Product followed by command: "WB 货号 1879785812 继续上架", "1879785812 上架"
+  if (new RegExp(`^${politePrefix}\\s*${productPrefix}\\s*${cmdVerbs}[！!。]*$`, "i").test(t)) return true;
+
+  // 3. Command followed by product: "继续上架 WB 货号 1879785812", "上架 1879785812"
+  if (new RegExp(`^${politePrefix}\\s*${cmdVerbs}\\s*${productPrefix}[！!。]*$`, "i").test(t)) return true;
+
+  return false;
 }
 
-export async function explainListingStatus(senderId, chatId, env, requested = null, quotedTaskId = null) {
+export async function explainListingStatus(senderId, chatId, env, requested = null, quotedTaskId = null, questionText = "") {
   let task = null;
   if (quotedTaskId) {
     const taskRes = await coordinate(env, "/task?sender=" + encodeURIComponent(senderId) + "&task_id=" + encodeURIComponent(quotedTaskId));
@@ -115,6 +133,11 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
 
   if (task.status === "ready") {
     let answer = prefix + "状态：资产包已生成，尚未上架。\n\n";
+    if (/(?:前台|链接|主图|一张图|单图|多图|详情页)/.test(questionText)) {
+      answer += "【前台图文说明】\n";
+      answer += "您打开的原商品链接仅包含原始商品的单张图片与原版信息。\n";
+      answer += "裂变助手已为该商品生成10套全新的同款场景图（每套含完整主图与轮播图）及俄语描述，已交付本聊天，尚未推送到您的店铺。\n\n";
+    }
     answer += "【未自动上架原因】\n";
     answer += "1. 安全复核机制：裂变助手生成10套场景图片与俄语描述后，按平台安全规范，先回传飞书交付商家复核，不会自动静默推送到店铺，避免未经审核直接发布。\n";
     answer += "2. 需店铺授权确认：发布到 Wildberries 店铺需要核验绑定的店铺 API 令牌与发货仓库。\n\n";
@@ -125,7 +148,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
       answer += "• 发货仓库：" + warehouseId + "\n";
       answer += "• API 令牌：全权限读写（有效）\n\n";
       answer += "【下一步操作】\n";
-      answer += "商品图文资产包已就绪。请复核本聊天的10套场景图片与俄语标题文案；确认外观和文案满意后，发送“上架”或“确认上架”，系统将调用 Wildberries 官方建卡接口创建10个全新变体并同步图片与初始库存（默认每款5件）。";
+      answer += "商品图文资产包已就绪。请复核本聊天的10套场景图片与俄语标题文案；确认外观和文案满意后，发送“上架”或“确认上架”（或“继续上架”），系统将调用 Wildberries 官方建卡接口创建10个全新变体并同步图片与初始库存（默认每款5件）。";
     } else if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
       answer += "【店铺授权状态】尚未完成\n";
       answer += "• 店铺名称：" + shopName + "\n";
@@ -186,10 +209,14 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
   return prefix + "状态：" + (task.status || "待核验") + "。\n" + (task.summary || "正在处理中；尚未确认上架。");
 }
 
-export async function executeListingCommand(senderId, chatId, env) {
-  const { task } = await (await coordinate(env, "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || ""))).json();
+export async function executeListingCommand(senderId, chatId, env, requested = null) {
+  const query = "/latest?sender=" + encodeURIComponent(senderId) + "&chat=" + encodeURIComponent(chatId || "") + (requested?.nmId ? "&nmid=" + encodeURIComponent(requested.nmId) : "");
+  const { task } = await (await coordinate(env, query)).json();
   if (!task) {
     return "尚未找到可上架的商品任务。请先发送 WB 商品详情链接或平台货号制作裂变图文。";
+  }
+  if (requested && task.nmId !== requested.nmId) {
+    return "本聊天尚未找到货号 " + requested.nmId + " 的已就绪任务。当前最近任务的货号是 " + task.nmId + "。如需上架新商品，请先发送该商品链接制作裂变图文。";
   }
   const prefix = "最近请求：WB 货号 " + task.nmId + "\n请求编号：" + task.task_id + "\n";
   if (task.status !== "ready") {
@@ -430,13 +457,14 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     return resumed.ok ? "已恢复该商品请求，已有通过检查的图片会继续使用，完成后回传本聊天。" : "当前请求正在执行，可发送“进度”查看。";
   }
   if (isListingCommand(text)) {
-    return await executeListingCommand(senderId, chatId, env);
+    const requested = resolveProduct(text);
+    return await executeListingCommand(senderId, chatId, env, requested);
   }
   if (isListingQuestion(text)) {
     const requested = resolveProduct(text);
     const quotedTaskIdMatch = text.match(/(?:请求编号|任务编号|编号|task_id)\s*[:：]?\s*(om_[a-zA-Z0-9_-]+)/i) || text.match(/\b(om_[a-zA-Z0-9_-]{16,64})\b/i);
     const quotedTaskId = quotedTaskIdMatch ? quotedTaskIdMatch[1] : null;
-    return await explainListingStatus(senderId, chatId, env, requested, quotedTaskId);
+    return await explainListingStatus(senderId, chatId, env, requested, quotedTaskId, text);
   }
   // A question containing a product number must not silently create another job.
   if (isFailureQuestion(text)) {
@@ -463,7 +491,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   }
   const product = resolveProduct(text);
   if (product) {
-    if (/(?:？|\?|为什么|为何|为啥|怎么|哪里|咋|什么原因|怎么回事|可否|是否|能否)/.test(text)) {
+    if (/(?:？|\?|为什么|为何|为啥|怎么|哪里|咋|什么原因|怎么回事|可否|是否|能否|好像|似乎|只有|没有|未见|不见|前台|只显示|没显示)/.test(text)) {
       return "识别到商品货号 " + product.nmId + "。如需为该商品制作10套裂变场景图文，请直接发送该货号或商品链接；如需查询状态，请发送“进度”或“为何未上架”。";
     }
     const key = "task:" + encodeURIComponent(senderId) + ":" + encodeURIComponent(messageId);

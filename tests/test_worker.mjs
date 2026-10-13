@@ -437,7 +437,12 @@ test('isListingQuestion and isListingCommand identify natural listing inquiries 
     '如何上架',
     '为何尚未上架',
     '这个商品为何未上架？',
-    'WB 货号 1879785812 为何未上架'
+    'WB 货号 1879785812 为何未上架',
+    '还是只有一张图',
+    '详情页好像还是没有',
+    '我打开前台的链接，好像只有一张主图，没有多张主图，也没有详情页，请务必确保主体和详情页都要有',
+    'WB 货号 1879785812 详情页好像还是没有',
+    'WB 货号 1879785812 还是只有一张图'
   ];
   for (const q of listingQuestions) {
     assert.equal(isListingQuestion(q), true, `Failed for question: ${q}`);
@@ -452,7 +457,16 @@ test('isListingQuestion and isListingCommand identify natural listing inquiries 
     '执行上架',
     '申请上架',
     '发布到店铺',
-    '确认发布'
+    '确认发布',
+    '继续上架',
+    'WB 货号 1879785812 继续上架',
+    '货号 1879785812 继续上架',
+    '1879785812 继续上架',
+    '继续上架 1879785812',
+    'WB 货号 1879785812 上架',
+    '1879785812 上架',
+    '上架 1879785812',
+    '请安排上架'
   ];
   for (const cmd of listingCommands) {
     assert.equal(isListingCommand(cmd), true, `Failed for command: ${cmd}`);
@@ -523,5 +537,19 @@ test('natural listing questions explain why task is not yet listed and provide s
   const askWithNmId = 'WB 货号 1879785812 能否帮我看看？';
   const askReply = await buildReply(askWithNmId, 'user_wb_list', 'm_ask', f.env, 'chat_list');
   assert.match(askReply, /识别到商品货号 1879785812/);
+  assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore);
+
+  // 5. Explicit user input from screenshot: "WB 货号 1879785812 继续上架"
+  const continueCmdReply = await buildReply('WB 货号 1879785812 继续上架', 'user_wb_list', 'm_continue', f.env, 'chat_list');
+  assert.match(continueCmdReply, /已确认上架指令，店铺授权核验通过/);
+  assert.match(continueCmdReply, /1879785812/);
+  assert.match(continueCmdReply, /RR010/);
+  assert.match(continueCmdReply, /2200772/);
+  assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore); // No duplicate task!
+
+  // 6. Storefront inquiry about 1 picture and no detail page
+  const storefrontReply = await buildReply('我打开前台的链接，好像只有一张主图，没有多张主图，也没有详情页，请务必确保主体和详情页都要有', 'user_wb_list', 'm_front', f.env, 'chat_list');
+  assert.match(storefrontReply, /前台图文说明/);
+  assert.match(storefrontReply, /10套全新/);
   assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore);
 });
