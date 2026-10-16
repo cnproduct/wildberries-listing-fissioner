@@ -83,11 +83,11 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             executor.construct_wb_cards_upload_payload(payload)
 
-    def test_no_default_secret_or_publishing_capability(self):
+    def test_no_default_secret_and_publication_support_is_explicit(self):
         with patch.object(executor, "CONFIG_PATH", self.root/"none"):
             with self.assertRaises(executor.GatewayError):
                 executor.load_config(self.root/"none")
-        self.assertEqual(executor.capabilities({})["publishing"],False)
+        self.assertEqual(executor.capabilities({})["publishing"],True)
         self.assertEqual(executor.capabilities({})["generation"],False)
 
 

@@ -8,7 +8,7 @@ const LEASE_MS = 180000;
 const MAX_ATTEMPTS = 3;
 // Task responses never carry seller credentials, including legacy records.
 const publicTask = task => { if (!task) return task; const { credentials, ...safe } = task; return safe; };
-const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-13-camera-policy1"} });
+const j = (data, status = 200) => Response.json(data, { status, headers:{"Cache-Control":"private, no-store, max-age=0","Vary":"Authorization","X-WB-Coordinator-Version":"2026-10-14-upload-first"} });
 const latestKey = (sender, chat) => 'latest:' + sender + (chat ? ':' + encodeURIComponent(chat) : '');
 async function latestInChat(storage, sender, chat) {
   let key = await storage.get(latestKey(sender, chat));
@@ -27,6 +27,11 @@ export class TaskCoordinator {
     }
     const tasks = await tx.list({ prefix: "task:" });
     for (const [key, task] of tasks) {
+      if(task.publication?.state==='checking' && task.publication.lease_expires_at<=now){
+        Object.assign(task.publication,{state:'failed',summary:'发布核验或执行中断；需检查已保存的发布断点，避免重复建卡。'});
+        delete task.publication.worker_id;delete task.publication.lease_id;delete task.publication.lease_expires_at;
+        await tx.put(key,task);
+      }
       if (task.credentials) {delete task.credentials;await tx.put(key,task);}
       if (task.sender_id && task.chat_id) {
         const pointerKey=latestKey(task.sender_id,task.chat_id);
@@ -90,13 +95,13 @@ export class TaskCoordinator {
       const executor = active.sort((a,b)=>b.last_seen-a.last_seen)[0];
       const capabilities = Object.assign({},...active.map(e=>e.capabilities || {}));
       capabilities.generation = active.some(e=>e.capabilities?.generation);
-      capabilities.publishing = false;
+      capabilities.publishing = active.some(e=>e.capabilities?.publishing);
       const tasks = await this.storage.list({ prefix: "task:" });
       const counts = {};
       for (const task of tasks.values()) counts[task.status] = (counts[task.status] || 0) + 1;
       const inbox = [...(await this.storage.list({prefix:'event:'})).values()];
       const activeExecutors = active.map(e => ({ worker_id: e.worker_id, store: e.store || null, last_seen: e.last_seen }));
-      return j({ version:"2026-10-13-camera-policy1", event_failures:inbox.filter(e=>e.failed).length, pending_events:inbox.filter(e=>!e.done && !e.failed).length, online, last_seen: executor?.last_seen || null, active_executors: activeExecutors, capabilities: online ? capabilities : {}, counts });
+      return j({ version:"2026-10-14-upload-first", event_failures:inbox.filter(e=>e.failed).length, pending_events:inbox.filter(e=>!e.done && !e.failed).length, online, last_seen: executor?.last_seen || null, active_executors: activeExecutors, capabilities: online ? capabilities : {}, counts });
     }
     if (url.pathname === "/heartbeat" && request.method === "POST") {
       if (typeof body.worker_id !== "string" || !body.worker_id) return j({ error: "worker_id required" }, 400);
@@ -168,10 +173,14 @@ export class TaskCoordinator {
     if (url.pathname === '/diagnostic' && request.method === 'POST') {
       // Authenticated maintenance may annotate a terminal failure; never change
       // task ownership, status, customer identity or trigger any message.
-      const allowed=['image_quality_failed','generation_timeout','generation_service_unavailable','generation_auth_failed','executor_auth_failed','connection_failed','product_validation_failed','scene_plan_invalid','generator_not_configured','generation_failed','generation_model_unavailable','lease_expired','unknown_failure'];
+      const allowed=['image_quality_failed','generation_timeout','generation_service_unavailable','generation_auth_failed','executor_auth_failed','connection_failed','product_validation_failed','scene_plan_invalid','generation_response_invalid','generator_not_configured','generation_failed','generation_model_unavailable','lease_expired','unknown_failure'];
       const d=body.details || {};
       if (!allowed.includes(d.reason_code)) return j({error:'Invalid diagnostic'},400);
       const clean={reason_code:d.reason_code,published:false};
+      if (d.stage!==undefined) {
+        if (!['processing','source_analysis','scene_plan','image_review','generating_text','generating_images'].includes(d.stage)) return j({error:'Invalid diagnostic stage'},400);
+        clean.stage=d.stage;
+      }
       for (const k of ['completed','failed_image','image_attempts','total']) {
         if (d[k]!==undefined) {
           if (!Number.isInteger(d[k]) || d[k]<0 || d[k]>10) return j({error:'Invalid diagnostic count'},400);
@@ -296,6 +305,68 @@ export class TaskCoordinator {
         else { delete task.lease_id; delete task.lease_expires_at; delete task.worker_id; }
         await tx.put(body.key, task);
         return j({ code: 0, task: publicTask(task) });
+      });
+    }
+    if (url.pathname === "/publication" && request.method === "POST") {
+      return this.storage.transaction(async tx => {
+        const key=body.key || "task:"+encodeURIComponent(body.sender_id || "")+":"+encodeURIComponent(body.task_id || "");
+        const task=await tx.get(key);
+        if(!key.startsWith('task:') || !task || task.sender_id!==body.sender_id || task.task_id!==body.task_id || !body.chat_id || task.chat_id!==body.chat_id) return j({error:"No task in this conversation"},404);
+        const creds=await tx.get("credentials:"+body.sender_id);
+        const store=String(body.store || '').toUpperCase();
+        if(!store || store!==creds?.shop_name?.toUpperCase()) return j({error:"Store binding mismatch"},409);
+        if(task.status!=="ready" || !task.details?.delivery_verified || task.details?.delivered_scenes!==10 || !task.details?.archive_message_id) return j({error:"Verified creative delivery required"},409);
+        if(task.publication && task.publication.store!==store) return j({error:"Publication already bound to another store"},409);
+        if(!task.publication){
+          task.publication={state:"requested",store,requested_at:now,authorized_by:body.sender_id,
+            request_message_id:body.message_id || null,published:false,
+            missing_fields:["store_authorization","complete_gallery","verified_package_specs"],
+            summary:"已保存上架指令；核实目标账户和建卡必需资料后优先上传，图片精修与定价库存随后完善。"};
+          await tx.put(key,task);
+        } else if(body.message_id && body.message_id!==task.publication.request_message_id && ['needs_input','failed'].includes(task.publication.state)){
+          task.publication.state='requested';task.publication.request_message_id=body.message_id;task.publication.summary='已收到继续上架指令，正在重新核验本批发布资料。';
+          await tx.put(key,task);
+        }
+        return j({key,publication:task.publication});
+      });
+    }
+    if (url.pathname === "/publication/claim" && request.method === "POST") {
+      return this.storage.transaction(async tx=>{
+        const task=await tx.get(body.key),p=task?.publication;
+        if(!p || p.state!=="requested" || p.resume_at>now || !body.worker_id || body.store && body.store!==p.store) return j({error:"Publication unavailable"},409);
+        p.state="checking";p.worker_id=body.worker_id;p.lease_id=crypto.randomUUID();p.lease_expires_at=now+LEASE_MS;
+        await tx.put(body.key,task);return j({task:publicTask(task),publication:p});
+      });
+    }
+    if (url.pathname === "/publication/update" && request.method === "POST") {
+      return this.storage.transaction(async tx=>{
+        const task=await tx.get(body.key),p=task?.publication;
+        if(!p || p.worker_id!==body.worker_id || p.lease_id!==body.lease_id || p.lease_expires_at<=now || !['requested','checking','needs_input','submitted','failed'].includes(body.state)) return j({error:"Publication lease lost or invalid state"},409);
+        if(typeof body.summary!=='string' || body.summary.length>1500) return j({error:'Summary required'},400);
+        if(body.upload_verified===true && (!Array.isArray(body.nm_ids) || body.nm_ids.length!==10 || new Set(body.nm_ids).size!==10 || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.card_media_readback_verified!==true)) return j({error:'Upload readback receipts required'},400);
+        if(body.pending_improvements!==undefined && (!Array.isArray(body.pending_improvements) || body.pending_improvements.length>10 || body.pending_improvements.some(x=>typeof x!=='string'||x.length>200))) return j({error:'Bounded improvement items required'},400);
+        if(body.state==='submitted' && (!Array.isArray(body.nm_ids) || body.nm_ids.length!==10 || new Set(body.nm_ids).size!==10 || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.media_verified!==true || body.price_verified!==true || body.stock_verified!==true)) return j({error:'Publication receipts required'},400);
+        p.state=body.state;p.summary=body.summary;p.checked_at=now;
+        if(body.upload_verified===true) Object.assign(p,{upload_verified:true,card_media_readback_verified:true,nm_ids:body.nm_ids,uploaded_at:p.uploaded_at||now});
+        if(body.pending_improvements!==undefined) p.pending_improvements=body.pending_improvements;
+        if(body.state==='requested'){
+          if(!Number.isSafeInteger(body.resume_at) || body.resume_at<=now || body.resume_at>now+3600000) return j({error:'Bounded synchronization time required'},400);
+          p.resume_at=body.resume_at;
+        }
+        if(body.state==='submitted'){Object.assign(p,{nm_ids:body.nm_ids,media_verified:true,price_verified:true,stock_verified:true,storefront_verified:false});delete p.missing_fields;}
+        if(body.state==='checking') p.lease_expires_at=now+LEASE_MS;
+        else {delete p.worker_id;delete p.lease_id;delete p.lease_expires_at;}
+        await tx.put(body.key,task);return j({publication:p});
+      });
+    }
+    if (url.pathname === "/publication/preflight" && request.method === "POST") {
+      const allowed=["complete_gallery","verified_package_specs","visual_review","verified_price","publisher_not_configured","brand","category_attributes","store_authorization"];
+      if(!Array.isArray(body.missing_fields) || body.missing_fields.some(x=>!allowed.includes(x)) || !body.missing_fields.length || typeof body.summary!=="string" || body.summary.length>1500) return j({error:"Bounded missing fields and summary required"},400);
+      return this.storage.transaction(async tx=>{
+        const task=await tx.get(body.key);
+        if(!task?.publication || task.publication.store!==body.store || task.publication.published || ['checking','submitted'].includes(task.publication.state)) return j({error:"No matching pending publication"},409);
+        task.publication={...task.publication,state:"needs_input",missing_fields:[...new Set(body.missing_fields)],summary:body.summary,checked_at:now};
+        await tx.put(body.key,task);return j({publication:task.publication});
       });
     }
     if (url.pathname === "/retry" && request.method === "POST") {

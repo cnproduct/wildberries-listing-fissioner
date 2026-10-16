@@ -39,3 +39,20 @@ class DiagnosticTests(unittest.TestCase):
             (p/'generated'/'09-try3-review.json').write_text(json.dumps({'issues':['Source promotional overlay was incorporated onto the carton packaging.']}))
             d=failure_details(RuntimeError('Generation program failed'),p)
             self.assertEqual(set(d['issue_codes']),{'camera_angle','label_distortion','composition_mismatch'})
+
+    def test_structured_output_failure_has_safe_specific_reason(self):
+        for message in ('Invalid source camera evidence', 'Unexpected token: private data is not valid JSON', 'Structured generation invalid: source_analysis', 'Structured generation invalid: image_review'):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                p=Path(tmp);(p/'generator.err.log').write_text(message+'\n')
+                d=failure_details(RuntimeError('Generation program failed'),p)
+                self.assertEqual(d['reason_code'],'generation_response_invalid')
+                self.assertNotIn('private data',json.dumps(d))
+                if message.endswith('image_review'): self.assertEqual(d['stage'],'image_review')
+
+
+    def test_no_visible_product_does_not_become_unknown_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);(p/'generator.err.log').write_text('No supported camera view\n')
+            d=failure_details(RuntimeError('Generation program failed'),p)
+            self.assertEqual(d['reason_code'],'product_validation_failed')
+            self.assertEqual(d['stage'],'source_analysis')

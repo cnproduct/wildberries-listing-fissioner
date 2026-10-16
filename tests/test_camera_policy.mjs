@@ -46,3 +46,12 @@ test('side evidence from another reference does not authorize carton-only side r
  assert.ok(!supportedCameraAngles(a,2,1).includes('left_three_quarter'));
  assert.ok(supportedCameraAngles(a,2,2).includes('left_three_quarter'));
 });
+
+test('context-only advertising image is valid evidence but cannot authorize a product camera view',()=>{
+ const a={geometry:'pink bottle and red cap',reference_views:[{reference_index:1,visible_surfaces:['front']},{reference_index:2,visible_surfaces:[]}]};
+ assert.deepEqual(supportedCameraAngles(a,2),['front','slightly_high_front','low_front']);
+ assert.deepEqual(supportedCameraAngles(a,2,1),['front','slightly_high_front','low_front']);
+ assert.throws(()=>supportedCameraAngles(a,2,2),/No supported camera view/);
+ assert.throws(()=>supportedCameraAngles({...a,reference_views:a.reference_views.map(v=>({...v,visible_surfaces:[]}))},2),/No supported camera view/);
+ assert.throws(()=>supportedCameraAngles({...a,reference_views:[a.reference_views[0]]},2),/Invalid source camera evidence/);
+});

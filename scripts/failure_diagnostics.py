@@ -57,6 +57,12 @@ def failure_details(exc, output=None):
                                 if re.search(pattern, issue, re.I): codes.add(code)
                 except (OSError, ValueError, TypeError): pass
             result.update(completed=accepted, image_attempts=attempts, issue_codes=sorted(codes))
+        elif 'No supported camera view' in line:
+            result.update(reason_code='product_validation_failed', stage='source_analysis')
+        elif re.search(r'Structured generation invalid:|Invalid source camera evidence|Invalid structured image review|Invalid camera review|not valid JSON|Unexpected (?:token|end)|Unterminated string', line):
+            result['reason_code'] = 'generation_response_invalid'
+            stage = re.search(r'Structured generation invalid: (source_analysis|scene_plan|image_review)', line)
+            result['stage'] = stage[1] if stage else ('source_analysis' if 'source camera evidence' in line else 'generating_text')
         elif re.search(r'Native generation.*(?:HTTP 404|model unavailable)', line):
             result['reason_code'] = 'generation_model_unavailable'
         elif re.search(r'HTTP (429|5\d\d)|timeout|aborted', line, re.I):

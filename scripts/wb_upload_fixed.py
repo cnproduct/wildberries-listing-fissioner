@@ -13,6 +13,8 @@ import time
 import uuid
 import urllib.request
 import urllib.error
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from PIL import Image
 try:
@@ -21,9 +23,22 @@ except ImportError:
     from runtime_files import write_json, read_cache
 
 CONTENT = 'https://content-api.wildberries.ru'
+_transport = ContextVar('wb_content_transport', default=None)
+
+
+@contextmanager
+def using_transport(request):
+    """Use the configured gateway without changing shared seller credentials."""
+    binding = _transport.set(request)
+    try:
+        yield
+    finally:
+        _transport.reset(binding)
 
 
 def _wb_request(token, path, body, content_type='application/json', extra_headers=None):
+    if _transport.get() is not None:
+        return _transport.get()(token, path, body, content_type, extra_headers)
     headers = {'Authorization':token, 'Content-Type':content_type, 'Accept':'application/json'}
     headers.update(extra_headers or {})
     raw = json.dumps(body, ensure_ascii=False).encode() if not isinstance(body, bytes) else body
@@ -69,7 +84,10 @@ def construct_wb_cards_upload_payload(payload, subject_id, barcodes):
     if any(not isinstance(c,str) or not c.isdigit() for c in barcodes):
         raise ValueError('Invalid barcodes')
     brand = payload.get('brand')
-    if not isinstance(brand, str) or not brand.strip():
+    omit_brand=payload.get('omit_brand') is True
+    if omit_brand and brand not in (None,''):
+        raise ValueError('Omitted brand cannot also supply a brand')
+    if not omit_brand and (not isinstance(brand, str) or not brand.strip()):
         raise ValueError('Confirmed brand required')
     dims = {k:_positive(payload.get(k+'_cm'), True) for k in ('length','width','height')}
     dims['weightBrutto'] = _positive(payload.get('weight_kg'))
@@ -97,7 +115,7 @@ def construct_wb_cards_upload_payload(payload, subject_id, barcodes):
         if not isinstance(title,str) or not title.strip() or len(title)>60 or not isinstance(description,str) or not description.strip() or len(description)>5000:
             raise ValueError('Invalid title or description; do not silently truncate')
         cards.append({'subjectID':subject_id,'variants':[{'vendorCode':vc,'title':title,'description':description,
-            'brand':brand,'dimensions':dims.copy(),'characteristics':chars,'sizes':[{'skus':[barcode]}]}]})
+            **({} if omit_brand else {'brand':brand}),'dimensions':dims.copy(),'characteristics':chars,'sizes':[{'skus':[barcode]}]}]})
     return cards
 
 
@@ -162,10 +180,10 @@ def execute_upload(payload, subject_id, token, image_paths_per_card, *, authoriz
     if not isinstance(image_paths_per_card,dict) or set(image_paths_per_card)!=set(vcs):
         raise ValueError('Images must cover every vendor code')
     image_hashes={}
-    if isinstance(expected_images_per_card,bool) or not isinstance(expected_images_per_card,int) or not 1<=expected_images_per_card<=30:
+    if expected_images_per_card is not None and (isinstance(expected_images_per_card,bool) or not isinstance(expected_images_per_card,int) or not 1<=expected_images_per_card<=30):
         raise ValueError('Invalid expected gallery size')
     for vc, paths in image_paths_per_card.items():
-        if len(paths)!=expected_images_per_card:
+        if not 1<=len(paths)<=30 or expected_images_per_card is not None and len(paths)!=expected_images_per_card:
             raise ValueError('Every listing requires the complete planned gallery (default: eight images)')
         _validate_images(paths)
         image_hashes[vc]=[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths]

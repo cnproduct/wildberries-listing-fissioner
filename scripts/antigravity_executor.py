@@ -21,6 +21,7 @@ from scripts.creative_bundle import build_creative_bundle
 from scripts.feishu_delivery import FeishuDelivery, DeliveryError
 from scripts.wb_source import acquire_source
 from scripts.failure_diagnostics import failure_details, failure_summary
+from scripts.publication_executor import execute_publication
 
 try:
     from .runtime_files import write_json, read_cache
@@ -345,7 +346,7 @@ def execute_task(task, gateway, config, worker_id, store=None):
 
 
 def capabilities(config):
-    return {"generation": bool(config.get("FISSION_GENERATOR_CMD")), "publishing": False,
+    return {"generation": bool(config.get("FISSION_GENERATOR_CMD")), "publishing": True,
             "source_validation": True, "asset_export": True,
             "bound_store": config.get("STORE_NAME")}
 
@@ -362,6 +363,14 @@ def run_daemon(config, interval=5, run_once=False):
     while True:
         try:
             gateway.call("/api/executor/heartbeat", {"worker_id": worker_id, "store": store, "capabilities": capabilities(config)})
+            publications=gateway.call('/api/tasks?status=ready').get('tasks',[])
+            for task in publications:
+                p=task.get('publication') or {}
+                if p.get('state')=='requested' and p.get('resume_at',0)<=time.time()*1000:
+                    try:
+                        execute_publication(task,gateway,config,worker_id,store)
+                    except GatewayError:
+                        logger.warning('Publication claim or lease unavailable')
             query = "/api/tasks?status=waiting_executor" + (f"&store={store}" if store else "")
             tasks = gateway.call(query).get("tasks", []) if capabilities(config)["generation"] else []
             for task in tasks:

@@ -6,13 +6,13 @@ export const VIEW_INSTRUCTIONS={
  low_front:'Camera 5–10 degrees below label centre, looking slightly up. Keep the known front dominant; no unseen underside.',
  left_three_quarter:'Camera on the product front-left, showing its known LEFT side and front. Use only the left-side surface evidenced in the references.',
  right_three_quarter:'Camera on the product front-right, showing its known RIGHT side and front. Use only the right-side surface evidenced in the references.',
- top_detail:'A close view of the actual top surface shown in the references; do not invent a top label or mechanism.'
+ top_detail:'High-angle view showing the actual top surface/cap shown in the references while keeping the front package and brand label clearly visible; do not invent a top label or mechanism.'
 };
 export function supportedCameraAngles(analysis, referenceCount, referenceIndex=null){
  if(!analysis || typeof analysis.geometry!=='string' || !analysis.geometry.trim() || !Array.isArray(analysis.reference_views) || analysis.reference_views.length!==referenceCount) throw Error('Invalid source camera evidence');
  const seen=new Set(),surfaces=new Set();
  for(const v of analysis.reference_views){
-  if(!Number.isInteger(v.reference_index)||v.reference_index<1||v.reference_index>referenceCount||seen.has(v.reference_index)||!Array.isArray(v.visible_surfaces)||!v.visible_surfaces.length||v.visible_surfaces.some(s=>!['front','left_side','right_side','top'].includes(s))) throw Error('Invalid source camera evidence');
+  if(!Number.isInteger(v.reference_index)||v.reference_index<1||v.reference_index>referenceCount||seen.has(v.reference_index)||!Array.isArray(v.visible_surfaces)||v.visible_surfaces.some(s=>!['front','left_side','right_side','top'].includes(s))) throw Error('Invalid source camera evidence');
   seen.add(v.reference_index);
   if(referenceIndex===null || v.reference_index===referenceIndex) v.visible_surfaces.forEach(s=>surfaces.add(s));
  }
@@ -21,7 +21,11 @@ export function supportedCameraAngles(analysis, referenceCount, referenceIndex=n
  if(surfaces.has('front')&&surfaces.has('left_side')) allowed.push('left_three_quarter');
  if(surfaces.has('front')&&surfaces.has('right_side')) allowed.push('right_three_quarter');
  if(surfaces.has('top')) allowed.push('top_detail');
- if(!allowed.length) throw Error('No supported camera view');
+ if(!allowed.length) {
+  const error=Error('No supported camera view');
+  if(referenceIndex===null) error.code='source_product_not_visible';
+  throw error;
+ }
  return allowed;
 }
 export function effectiveShot(item, allowed, index=0){
@@ -46,8 +50,8 @@ export function assessCameraReview(raw, allowed){
 }
 export const CAMERA_REVIEW_PROMPT='Compare source photographs with the LAST generated image. Return ONLY JSON {product_passed:boolean,product_issues:[English strings],copy_passed:boolean,copy_issues:[English strings],composition_passed:boolean,composition_issues:[English strings],camera:{matches_plan:boolean,observed_angle:string,reason:string}}. '+
  'Product checks: exact physical shape, cap, label brand and major text/artwork, sale unit count and required packaging. Reject distorted labels, extra units and any promotional overlay from the source that has been painted onto the real package. Ignore only unreadable microprint, not major readable text. '+
- 'Copy checks: verify Russian title/description against the source facts AND the actual image. '+
- 'Composition checks: required main subject and framing, original scene arrangement, not a repeated source cutout with only background changed. Reject when carton-focus puts the carton behind the bottle. '+
+ 'Copy checks: verify Russian title/description against the source facts AND the actual image. The title and description are delivered separately in chat, NOT printed on the image. Source advertising banners are context only. Generated images must NOT contain added text overlays; absence of the source banners is expected, never a failure. Compare the requested scene_prompt and selected reference state; do not invent additional requirements. '+
+ 'Composition checks: required main subject and framing, appropriate scene background. Preserving the source product cutout with a new background is allowed. Reject when carton-focus puts the carton behind the bottle. '+
  'Camera check is separate: report the ACTUAL supported view, not an imagined exact azimuth. Small elevation/perspective differences and left/right terminology ambiguity alone are not product or composition errors. If view is indeterminate use unknown; never pretend an unverified hidden surface is supported. Never put a camera-only mismatch in product/copy/composition issues. All other failures remain strict.';
 export function canReuseApprovedShot(saved,planned,identity,currentImageHash){
  return !!(saved?.identity===identity && saved.review?.passed===true && Array.isArray(saved.review.issues) && saved.review.issues.length===0 &&

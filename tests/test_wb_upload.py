@@ -24,6 +24,17 @@ class UploadTests(unittest.TestCase):
             with self.assertRaises(ValueError):wb.execute_upload(self.payload,360,'test',{})
             with self.assertRaises(ValueError):wb.execute_upload({**self.payload,'facts_verified':True},360,'test',{},authorized=True,checkpoint='/tmp/not-written.json')
             post.assert_not_called()
+    def test_explicit_unbranded_selection_omits_brand_without_inventing_one(self):
+        payload={**self.payload,'brand':'','omit_brand':True}
+        card=wb.construct_wb_cards_upload_payload(payload,360,['123'])[0]['variants'][0]
+        self.assertNotIn('brand',card)
+        with self.assertRaises(ValueError): wb.construct_wb_cards_upload_payload({**payload,'brand':'Other'},360,['123'])
+        with self.assertRaises(ValueError): wb.construct_wb_cards_upload_payload({**payload,'omit_brand':False},360,['123'])
+    def test_gateway_transport_is_scoped_and_restored_after_failure(self):
+        def gateway(*args): raise RuntimeError('gateway unavailable')
+        with self.assertRaises(RuntimeError):
+            with wb.using_transport(gateway): wb._wb_post('private','/path',{})
+        self.assertIsNone(wb._transport.get())
     def test_local_photo_uses_multipart_file_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             photo=Path(tmp)/'image.png';Image.new('RGB',(720,960)).save(photo)
@@ -46,6 +57,14 @@ class UploadTests(unittest.TestCase):
             def read(self):return b'{"error":true,"errorText":"private detail"}'
         with patch.object(wb.urllib.request,'urlopen',return_value=Response()):
             with self.assertRaisesRegex(RuntimeError,'wb_api_rejected'):wb._wb_post('dummy','/path',{})
+    def test_upload_first_accepts_available_gallery_and_reads_it_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            photo=Path(tmp)/'photo.png';Image.new('RGB',(720,960)).save(photo)
+            with patch.object(wb,'_find_card',return_value=None),patch.object(wb,'allocate_barcodes',return_value=['123']),patch.object(wb,'_wb_post') as post,patch.object(wb,'upload_card_media') as media,patch.object(wb,'wait_for_cards',return_value={'real-1':123}) as readback:
+                result=wb.execute_upload({**self.payload,'facts_verified':True},360,'test',{'real-1':[str(photo)]},authorized=True,checkpoint=Path(tmp)/'state.json',expected_images_per_card=None)
+                self.assertEqual(result,{'real-1':123})
+                self.assertEqual(readback.call_args.kwargs['expected_images'],{'real-1':1})
+                media.assert_called_once();post.assert_called_once()
     def test_wrong_product_or_missing_photos_never_pass_readback(self):
         with patch.object(wb,'_wb_post',return_value=(200,{'cards':[{'vendorCode':'other','nmID':123,'photos':[{}]}]})):
             self.assertIsNone(wb._find_card('dummy','wanted'))
