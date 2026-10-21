@@ -296,8 +296,8 @@ export class TaskCoordinator {
         if (body.status === "ready" && (!body.details?.artifacts_verified || !body.details?.manifest_path || body.details?.published)) {
           return j({ error: "Verified asset evidence required; publishing is separate" }, 400);
         }
-        if (body.status === "ready" && task.mode === "creative" && (!body.details?.delivery_verified || body.details?.delivered_scenes !== 10 || !body.details?.archive_message_id)) {
-          return j({error:"Ten scene deliveries and archive receipt required"},400);
+        if (body.status === "ready" && task.mode === "creative" && (!body.details?.delivery_verified || ![5, 10].includes(body.details?.delivered_scenes) || !body.details?.archive_message_id)) {
+          return j({error:"Five scene deliveries and archive receipt required"},400);
         }
         task.status = body.status; task.summary = body.summary || task.summary;
         task.details = body.details || {}; task.updated_at = now;
@@ -315,7 +315,7 @@ export class TaskCoordinator {
         const creds=await tx.get("credentials:"+body.sender_id);
         const store=String(body.store || '').toUpperCase();
         if(!store || store!==creds?.shop_name?.toUpperCase()) return j({error:"Store binding mismatch"},409);
-        if(task.status!=="ready" || !task.details?.delivery_verified || task.details?.delivered_scenes!==10 || !task.details?.archive_message_id) return j({error:"Verified creative delivery required"},409);
+        if(task.status!=="ready" || !task.details?.delivery_verified || ![5, 10].includes(task.details?.delivered_scenes) || !task.details?.archive_message_id) return j({error:"Verified creative delivery required"},409);
         if(task.publication && task.publication.store!==store) return j({error:"Publication already bound to another store"},409);
         if(!task.publication){
           task.publication={state:"requested",store,requested_at:now,authorized_by:body.sender_id,
@@ -343,9 +343,9 @@ export class TaskCoordinator {
         const task=await tx.get(body.key),p=task?.publication;
         if(!p || p.worker_id!==body.worker_id || p.lease_id!==body.lease_id || p.lease_expires_at<=now || !['requested','checking','needs_input','submitted','failed'].includes(body.state)) return j({error:"Publication lease lost or invalid state"},409);
         if(typeof body.summary!=='string' || body.summary.length>1500) return j({error:'Summary required'},400);
-        if(body.upload_verified===true && (!Array.isArray(body.nm_ids) || body.nm_ids.length!==10 || new Set(body.nm_ids).size!==10 || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.card_media_readback_verified!==true)) return j({error:'Upload readback receipts required'},400);
+        if(body.upload_verified===true && (!Array.isArray(body.nm_ids) || ![5, 10].includes(body.nm_ids.length) || new Set(body.nm_ids).size!==body.nm_ids.length || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.card_media_readback_verified!==true)) return j({error:'Upload readback receipts required'},400);
         if(body.pending_improvements!==undefined && (!Array.isArray(body.pending_improvements) || body.pending_improvements.length>10 || body.pending_improvements.some(x=>typeof x!=='string'||x.length>200))) return j({error:'Bounded improvement items required'},400);
-        if(body.state==='submitted' && (!Array.isArray(body.nm_ids) || body.nm_ids.length!==10 || new Set(body.nm_ids).size!==10 || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.media_verified!==true || body.price_verified!==true || body.stock_verified!==true)) return j({error:'Publication receipts required'},400);
+        if(body.state==='submitted' && (!Array.isArray(body.nm_ids) || ![5, 10].includes(body.nm_ids.length) || new Set(body.nm_ids).size!==body.nm_ids.length || body.nm_ids.some(x=>!Number.isSafeInteger(x)||x<=0) || body.media_verified!==true || body.price_verified!==true || body.stock_verified!==true)) return j({error:'Publication receipts required'},400);
         p.state=body.state;p.summary=body.summary;p.checked_at=now;
         if(body.upload_verified===true) Object.assign(p,{upload_verified:true,card_media_readback_verified:true,nm_ids:body.nm_ids,uploaded_at:p.uploaded_at||now});
         if(body.pending_improvements!==undefined) p.pending_improvements=body.pending_improvements;
@@ -378,7 +378,7 @@ export class TaskCoordinator {
         if (ACTIVE.has(task.status)) return j({ error:"Task is processing" },409);
         if (body.message_id) await tx.put('mutation:retry:'+body.message_id,{key:body.key});
         task.status="waiting_executor"; task.attempts=0; task.mode="creative";
-        task.summary="正在重新获取原商品，制作10套场景图文。"; task.updated_at=now;
+        task.summary="正在重新获取原商品，制作5套场景图文。"; task.updated_at=now;
         task.details={};
         await tx.put(body.key,task);
         return j({code:0,task:publicTask(task)});

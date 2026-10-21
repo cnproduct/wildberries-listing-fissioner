@@ -28,14 +28,19 @@ def calculate_fission_prices(base_price, count=10, up_ratios=None, down_ratios=N
     """
     if isinstance(base_price, bool) or not isinstance(base_price, (int, float)) or not math.isfinite(base_price) or base_price <= 0:
         raise ValueError("Base price must be a real positive number")
-    if count != 10:
-        raise ValueError("Fission pricing strategy requires exactly 10 listings")
+    if count not in (5, 10):
+        raise ValueError("Fission pricing strategy requires 5 or 10 listings")
 
-    up_r = list(up_ratios if up_ratios is not None else DEFAULT_UPPER_RATIOS)
-    down_r = list(down_ratios if down_ratios is not None else DEFAULT_LOWER_RATIOS)
-
-    if len(up_r) != 5 or len(down_r) != 5:
-        raise ValueError("Upper and lower ratio lists must each have 5 elements")
+    if count == 5:
+        up_r = list(up_ratios if up_ratios is not None else (0.02, 0.05, 0.08))
+        down_r = list(down_ratios if down_ratios is not None else (-0.02, -0.05))
+        if len(up_r) != 3 or len(down_r) != 2:
+            raise ValueError("For 5 listings, upper and lower ratio lists must have 3 and 2 elements")
+    else:
+        up_r = list(up_ratios if up_ratios is not None else DEFAULT_UPPER_RATIOS)
+        down_r = list(down_ratios if down_ratios is not None else DEFAULT_LOWER_RATIOS)
+        if len(up_r) != 5 or len(down_r) != 5:
+            raise ValueError("Upper and lower ratio lists must each have 5 elements")
     if any(r < 0.01 or r > 0.15 for r in up_r):
         raise ValueError("Upper price ratios must be between +1% and +15%")
     if any(r > -0.01 or r < -0.10 for r in down_r):
@@ -43,7 +48,7 @@ def calculate_fission_prices(base_price, count=10, up_ratios=None, down_ratios=N
 
     base_int = round(base_price)
 
-    # 1. Calculate Listings 1 to 5 (increases: +1% to +15%)
+    # 1. Calculate upper tier listings (increases: +1% to +15%)
     up_items = []
     prev_up = base_int
     for idx, r in enumerate(up_r, 1):
@@ -59,10 +64,10 @@ def calculate_fission_prices(base_price, count=10, up_ratios=None, down_ratios=N
             "tier": "upper"
         })
 
-    # 2. Calculate Listings 6 to 10 (decreases: -1% to -10%)
+    # 2. Calculate lower tier listings (decreases: -1% to -10%)
     down_items = []
     prev_down = base_int
-    for idx, r in enumerate(down_r, 6):
+    for idx, r in enumerate(down_r, len(up_r) + 1):
         target = round(base_price * (1.0 + r))
         actual = min(target, prev_down - 1)
         if actual <= 0:
@@ -81,7 +86,7 @@ def calculate_fission_prices(base_price, count=10, up_ratios=None, down_ratios=N
     prices = [item["price"] for item in all_items]
 
     # Enforce uniqueness
-    if len(set(prices)) != 10:
+    if len(set(prices)) != count:
         # Fallback fine-tuning for extremely small base prices
         used = set()
         for item in all_items:

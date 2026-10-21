@@ -1,11 +1,11 @@
 ---
 name: wildberries-listing-fissioner
-description: 从 Wildberries 链接或货号生成同款十种场景图文，支持飞书对话中讨论图片一致性、查看和修改生图提示词、指定图片返工，并核对 WB/Ozon 原图。实际店铺发布需另行核验。
+description: 从 Wildberries 链接或货号生成同款五种场景图文（1拆5），支持飞书对话中讨论图片一致性、查看和修改生图提示词、指定图片返工，并核对 WB/Ozon 原图。实际店铺发布需另行核验。
 ---
 
 # Wildberries Listing Fissioner
 
-把一个商品的真实信息转为多套不同营销表达。飞书自动流程固定十套；Agent 手工制作和通用导出器可按用户指定数量执行。可在 Codex、Antigravity 或其他有图片编辑和本地运行能力的 Agent 中使用。
+把一个商品的真实信息转为多套不同营销表达。飞书自动流程默认五套（1拆5，兼容历史十套）；Agent 手工制作和通用导出器可按用户指定数量执行。可在 Codex、Antigravity 或其他有图片编辑和本地运行能力的 Agent 中使用。
 
 ## 首要目标：产品上传成功
 

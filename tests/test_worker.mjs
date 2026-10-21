@@ -302,7 +302,7 @@ test('natural failure questions explain the current chat task without creating o
     const q=question;
     assert.equal(isFailureQuestion(q),true);
     const reply=await buildReply(q,'user','query',f.env,'chat-a');
-    assert.match(reply,/第3张/);assert.match(reply,/2\/10/);assert.match(reply,/额外商品/);assert.doesNotMatch(reply,/SECRET/);
+    assert.match(reply,/第3张/);assert.match(reply,/2\/5/);assert.match(reply,/额外商品/);assert.doesNotMatch(reply,/SECRET/);
   }
   assert.equal((await f.storage.list({prefix:'task:'})).size,1);assert.equal((await f.storage.get('task:user:failed')).status,'failed');
   assert.match(await buildReply('为什么失败','user','query',f.env,'chat-b'),/没有找到/);
@@ -488,7 +488,7 @@ test('natural listing questions explain why task is not yet listed and provide s
   await f.call('/put', { key: 'task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6', task: { task_id: 'om_x100b63f4aa3d14a0b296c89eebe9ba6', sender_id: 'user_wb_list', chat_id: 'chat_list', nmId: '1879785812' } });
   const t = await f.storage.get('task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6');
   t.status = 'ready';
-  t.summary = '10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。';
+  t.summary = '5种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。';
   await f.storage.put('task:user_wb_list:om_x100b63f4aa3d14a0b296c89eebe9ba6', t);
 
   // 1. Simple query: "为何未上架"
@@ -508,7 +508,7 @@ test('natural listing questions explain why task is not yet listed and provide s
   const quotedMessage = `最近请求：WB 货号 1879785812
 请求编号：om_x100b63f4aa3d14a0b296c89eebe9ba6
 状态：资产包已生成，尚未上架。
-10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。
+5种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。
 
 这个为何未上架`;
 
@@ -550,7 +550,7 @@ test('natural listing questions explain why task is not yet listed and provide s
   // 6. Storefront inquiry about 1 picture and no detail page
   const storefrontReply = await buildReply('我打开前台的链接，好像只有一张主图，没有多张主图，也没有详情页，请务必确保主体和详情页都要有', 'user_wb_list', 'm_front', f.env, 'chat_list');
   assert.match(storefrontReply, /前台图文说明/);
-  assert.match(storefrontReply, /10套全新/);
+  assert.match(storefrontReply, /5套全新/);
   assert.equal((await f.storage.list({ prefix: 'task:user_wb_list:' })).size, taskCountBefore);
 });
 
@@ -709,10 +709,10 @@ test('all four inquiry categories (店铺绑定, 窗口授权, 店铺上架, 店
     }
 
     // 4. 店铺运营
-    for (const q of ['店铺运营', '如何运营店铺', '怎么运营', '裂变定价', '怎么定价', '价格梯度', '初始库存', '怎么改库存', '俄语标题怎么写', '1拆10有什么用', '防关联', '多店铺运营']) {
+    for (const q of ['店铺运营', '如何运营店铺', '怎么运营', '裂变定价', '怎么定价', '价格梯度', '初始库存', '怎么改库存', '俄语标题怎么写', '1拆5有什么用', '1拆10有什么用', '防关联', '多店铺运营']) {
       assert.equal(isStoreOperationQuestion(q), true, `Expected store operation question for: ${q}`);
       const reply = await buildReply(q, 'user_4cat', 'm_ops', f.env);
-      assert.match(reply, /【Wildberries 店铺运营与 1拆10 裂变策略指南】/);
+      assert.match(reply, /【Wildberries 店铺运营与 1拆5 裂变策略指南】/);
       assert.match(reply, /RR010/);
       assert.match(reply, /阶梯定价/);
       assert.doesNotMatch(reply, /请发送一个 WB 商品链接/);
@@ -745,11 +745,11 @@ test('natural publication requests resolve the completed product and target stor
  const f=fixture(),sender='listing_owner',chat='listing_chat';
  await f.call('/credentials',{sender_id:sender,credentials:{shop_name:'RR012',warehouse_id:'warehouse12',api_token:'PRIVATE_TOKEN'}});
  await f.call('/put',{key:'task:listing_owner:completed',task:{task_id:'completed',sender_id:sender,chat_id:chat,nmId:'1512302028'}});
- const task=await f.storage.get('task:listing_owner:completed');task.status='ready';task.details={delivery_verified:true,delivered_scenes:10,archive_message_id:'archive'};await f.storage.put('task:listing_owner:completed',task);
- for(const text of ['帮我上架到RR012店','帮我把WB 1512302028已完成的这10套上架到RR012店','请把 WB1512302028 已生成的十套发布到店铺 RR012','将这批已完成的图文上架到 RR012 店']){
+ const task=await f.storage.get('task:listing_owner:completed');task.status='ready';task.details={delivery_verified:true,delivered_scenes:5,archive_message_id:'archive'};await f.storage.put('task:listing_owner:completed',task);
+ for(const text of ['帮我上架到RR012店','帮我把WB 1512302028已完成的这5套上架到RR012店','帮我把WB 1512302028已完成的这10套上架到RR012店','请把 WB1512302028 已生成的五套发布到店铺 RR012','将这批已完成的图文上架到 RR012 店']){
   assert.equal(isListingCommand(text),true,text);
   const reply=await buildReply(text,sender,'new_message',f.env,chat);
-  assert.match(reply,/请求编号：completed/);assert.match(reply,/目标店铺：RR012/);assert.match(reply,/已交付的10套/);assert.match(reply,/上架指令已保存/);
+  assert.match(reply,/请求编号：completed/);assert.match(reply,/目标店铺：RR012/);assert.match(reply,/已交付的5套/);assert.match(reply,/上架指令已保存/);
   assert.doesNotMatch(reply,/请发送一个 WB|已记录商品请求|PRIVATE_TOKEN/);
  }
  assert.equal((await f.storage.list({prefix:'task:'})).size,1);
@@ -761,7 +761,7 @@ test('explicit product publication never falls back to a different product or an
  await f.call('/put',{key:'task:owner:old',task:{task_id:'old',sender_id:'owner',chat_id:'chat1',nmId:'1512302028'}});
  const old=await f.storage.get('task:owner:old');old.status='ready';await f.storage.put('task:owner:old',old);
  await f.call('/put',{key:'task:owner:new',task:{task_id:'new',sender_id:'owner',chat_id:'chat1',nmId:'1879785812'}});
- const reply=await buildReply('帮我把WB 1512302028已完成的这10套上架到RR012店','owner','cmd',f.env,'chat1');
+ const reply=await buildReply('帮我把WB 1512302028已完成的这5套上架到RR012店','owner','cmd',f.env,'chat1');
  assert.match(reply,/请求编号：old/);assert.doesNotMatch(reply,/请求编号：new/);
  const foreign=await buildReply('帮我把WB1512302028上架到RR012店','owner','cmd2',f.env,'chat2');
  assert.match(foreign,/尚未找到/);assert.doesNotMatch(foreign,/请求编号：old/);

@@ -2,10 +2,10 @@ export const CREATIVE_POLICY_VERSION = "2026-10-14-source-edit-v3";
 export const LEGACY_CREATIVE_POLICIES = ["2026-10-13-camera-v2", "2026-10-11-camera-v1"];
 export const CAMERA_ANGLES = ["front", "left_three_quarter", "right_three_quarter", "slightly_high_front", "low_front", "top_detail"];
 export const SHOT_SIZES = ["full_product", "environmental", "close_up"];
-export const SCENE_DIRECTION = "Inspect the supplied images for actual product identity and application context. Select ONE clear canonical product photograph showing the verified sold set and packaging version; use that SAME source_reference_index, existing camera view and framing for all ten background edits. Preserve the original product cutout, label artwork, proportions, colour, count, arrangement and state. Change only the surrounding background and external contact shadows. Never demand a new product angle or reconstruct hidden/cropped details. Other images inspire relevant settings only, never blend their packaging versions. If a full sold-set photograph is unavailable, do not invent missing units or packaging; report the source limitation.";
+export const SCENE_DIRECTION = "Inspect the supplied images for actual product identity and application context. Select ONE clear canonical product photograph showing the verified sold set and packaging version; use that SAME source_reference_index, existing camera view and framing for all five background edits. Preserve the original product cutout, label artwork, proportions, colour, count, arrangement and state. Change only the surrounding background and external contact shadows. Never demand a new product angle or reconstruct hidden/cropped details. Other images inspire relevant settings only, never blend their packaging versions. If a full sold-set photograph is unavailable, do not invent missing units or packaging; report the source limitation.";
 
 export function validateShotPlans(items, referenceCount, supportedAngles=CAMERA_ANGLES, preserveSource=false) {
-  if (!Array.isArray(items) || items.length !== 10) throw new Error("Ten proposals required");
+  if (!Array.isArray(items) || (items.length !== 5 && items.length !== 10)) throw new Error("Five or ten proposals required");
   for (const item of items) {
     if (!supportedAngles.includes(item.camera_angle) || !SHOT_SIZES.includes(item.shot_size) ||
         !Number.isInteger(item.source_reference_index) || item.source_reference_index < 1 || item.source_reference_index > referenceCount ||

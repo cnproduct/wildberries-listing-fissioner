@@ -102,6 +102,7 @@ class FeishuDelivery:
             write_json(checkpoint, receipt)
         task = {**task, 'task_id':task['task_id'] + ':' + task['chat_id'] + ':' + revision}
         base = Path(bundle['manifest_path']).parent
+        total_scenes = len(manifest['items'])
         for item in manifest['items']:
             index = str(item['index'])
             if index in receipt['scenes']:
@@ -112,7 +113,7 @@ class FeishuDelivery:
                 key = self.upload(base / item['image_path'], 'image')
                 receipt['uploads'][index] = key
                 persist()
-            content = {'zh_cn': {'title': f"WB {task['nmId']} · {item['index']:02d}/10 · {item['scene_name']}", 'content': [
+            content = {'zh_cn': {'title': f"WB {task['nmId']} · {item['index']:02d}/{total_scenes:02d} · {item['scene_name']}", 'content': [
                 [{'tag': 'text', 'text': '受众：' + item['persona']}],
                 [{'tag': 'text', 'text': item['title']}],
                 [{'tag': 'text', 'text': item['description']}],
@@ -131,6 +132,6 @@ class FeishuDelivery:
         before_send()
         if not receipt.get('completion_message_id'):
             receipt['completion_message_id'] = self.send(task, 'text', {'text':
-                f"WB {task['nmId']} 的10套同款场景图片与俄语标题、描述已完成，已发送上方10条图文和完整压缩包（含图片、Excel与文案）。正式使用前请复核商品外观和文案。"}, 'completion')
+                f"WB {task['nmId']} 的{total_scenes}套同款场景图片与俄语标题、描述已完成，已发送上方{total_scenes}条图文和完整压缩包（含图片、Excel与文案）。正式使用前请复核商品外观和文案。"}, 'completion')
             persist()
         return receipt

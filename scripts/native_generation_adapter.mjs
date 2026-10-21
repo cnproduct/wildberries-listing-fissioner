@@ -108,9 +108,10 @@ async function main(){
   const fixed=Object.fromEntries(["product_name","brand","category","composition","country","sales_quantity","verified_features","source_description"].filter(k=>facts[k]!=null).map(k=>[k,facts[k]]));
   const originals=facts.source_images.slice(0,8).map(imagePart);
   const output=path.resolve(input.output_dir);
+  const targetScenes=Number(input.scene_count)===10?10:5;
   fs.mkdirSync(path.join(output,"generated"),{recursive:true});
-  const progress=(status,summary,count=0)=>{const f=path.join(output,"progress.json");fs.writeFileSync(f+".tmp",JSON.stringify({status,summary,completed:count,total:10}));fs.renameSync(f+".tmp",f);};
-  progress("generating_text","正在识别原商品，规划10种适用场景与俄语文案。");
+  const progress=(status,summary,count=0,total=targetScenes)=>{const f=path.join(output,"progress.json");fs.writeFileSync(f+".tmp",JSON.stringify({status,summary,completed:count,total}));fs.renameSync(f+".tmp",f);};
+  progress("generating_text",`正在识别原商品，规划${targetScenes}种适用场景与俄语文案。`);
   const cameraEvidencePath=path.join(output,"camera-evidence-"+CAMERA_REVIEW_VERSION+".json");
   const evidenceIdentity=digest(JSON.stringify(originals));
   let evidence=readCache(cameraEvidencePath);
@@ -138,10 +139,10 @@ async function main(){
   const legacy=existingDraft?null:LEGACY_CREATIVE_POLICIES.map(policy=>({policy,draft:readCache(path.join(output,"scene-plan-"+policy+".json"))})).find(x=>x.draft);
   const legacyDraft=legacy?.draft, draftPolicy=legacy?.policy || CREATIVE_POLICY_VERSION;
   const preserveSource=!legacyDraft;
-  const instructions="Use the reference photographs and source listing to create exactly 10 distinct, realistic application-context marketing proposals for THIS SAME physical product. "+
+  const instructions="Use the reference photographs and source listing to create exactly "+targetScenes+" distinct, realistic application-context marketing proposals for THIS SAME physical product. "+
     "Return only JSON {visual_identity:string,items:[{scene_name:Chinese short name,persona:Chinese audience,title:Russian,description:Russian,keywords:[Russian string],scene_prompt:English,source_reference_index:integer,source_role:string,camera_angle:string,shot_size:string}]}. Titles <=60 characters and all unique. "+
     SCENE_DIRECTION+" camera_angle must be one of "+JSON.stringify(allowedAngles)+"; shot_size must be one of "+JSON.stringify(SHOT_SIZES)+". Reference indices are 1-based within the "+originals.length+" supplied photographs. "+
-    "Use the SAME existing source view and framing for all ten images; camera_angle describes the source, not a request to change it. Per-reference observed surfaces: "+JSON.stringify(evidence.analysis.reference_views)+". Each selected reference must support its assigned angle. A reference with an empty visible_surfaces array is context only and MUST NOT be selected as source_reference_index. Select a source showing front or top for product geometry, and use context-only references solely for scene inspiration. "+
+    "Use the SAME existing source view and framing for all "+targetScenes+" images; camera_angle describes the source, not a request to change it. Per-reference observed surfaces: "+JSON.stringify(evidence.analysis.reference_views)+". Each selected reference must support its assigned angle. A reference with an empty visible_surfaces array is context only and MUST NOT be selected as source_reference_index. Select a source showing front or top for product geometry, and use context-only references solely for scene inspiration. "+
     "Read the sale-unit count and per-unit volume from the source facts/description. If the listing is a multipack, EVERY description and scene_prompt must explicitly state that count and each unit volume; do not turn a single-bottle reference photograph into a single-bottle sale, and never set source_role to single_bottle_context. Show the complete set in each scene. If unverified, do not invent count or volume. "+
     "Scenes must be materially different backgrounds/compositions and relevant to the product, without introducing new uses, unsupported cosmetic/medical effects, ingredients, safety, durability, certifications, packaging, sales quantity or accessories. "+
     "Descriptions should be natural Russian, 2-4 sentences describing the actual product and suitable setting. Do not claim unverified performance. Repeat confirmed product name and capacity accurately. No prices, shipping data or barcodes. "+
@@ -151,19 +152,20 @@ async function main(){
   function validateDraft(draft){
     if(typeof draft.visual_identity!=="string" || !draft.visual_identity.trim()) throw Error("Visual identity required");
     validateShotPlans(draft.items,originals.length,allowedAngles,preserveSource);
-    if(new Set(draft.items.map(x=>x.title?.trim().toLowerCase())).size!==10) throw Error("Duplicate scene titles");
+    if(new Set(draft.items.map(x=>x.title?.trim().toLowerCase())).size!==draft.items.length) throw Error("Duplicate scene titles");
     for(const item of draft.items){
       if(typeof item.title!=="string" || !item.title.trim() || [...item.title].length>60 || typeof item.description!=="string" || !item.description.trim() || typeof item.scene_name!=="string" || !item.scene_name.trim() || typeof item.scene_prompt!=="string" || !item.scene_prompt.trim()) throw Error("Invalid generated copy");
       if(!supportedCameraAngles(evidence.analysis,originals.length,item.source_reference_index).includes(item.camera_angle)) throw Error("Proposal camera must be supported by its own source reference");
     }
   }
   const draft=existingDraft || legacyDraft || await structured([{text:instructions},...originals],validateDraft,'scene_plan');
-  if(!Array.isArray(draft.items) || draft.items.length!==10) throw new Error("Ten proposals required");
+  if(!Array.isArray(draft.items) || ![5, 10].includes(draft.items.length)) throw new Error("Five proposals required");
+  const totalScenes=draft.items.length;
   validateShotPlans(draft.items, originals.length,legacyDraft?CAMERA_ANGLES:allowedAngles,preserveSource);
-  if(new Set(draft.items.map(x=>x.title?.trim().toLowerCase())).size!==10) throw new Error("Duplicate scene titles");
+  if(new Set(draft.items.map(x=>x.title?.trim().toLowerCase())).size!==totalScenes) throw new Error("Duplicate scene titles");
   if(!legacyDraft) writeJSON(draftPath,draft);
   const items=[],reviews=[];
-  for(let i=0;i<10;i++){
+  for(let i=0;i<totalScenes;i++){
     const item=draft.items[i], prefix=String(i+1).padStart(2,"0");
     if(typeof item.title!=="string" || [...item.title].length>60 || typeof item.description!=="string" || !item.scene_name) throw new Error("Invalid generated copy");
     const checkpoint=path.join(output,"generated",prefix+"-accepted.json");
@@ -177,7 +179,7 @@ async function main(){
     const shotAngles=supportedCameraAngles(evidence.analysis,originals.length,item.source_reference_index);
     let shot=effectiveShot(item,shotAngles,i);
     for(let attempt=0;attempt<3;attempt++){
-      progress("generating_images",`正在制作并核对场景图 ${i+1}/10：${item.scene_name}。已通过 ${items.length} 张。`,items.length);
+      progress("generating_images",`正在制作并核对场景图 ${i+1}/${totalScenes}：${item.scene_name}。已通过 ${items.length} 张。`,items.length,totalScenes);
       const edited=await call(imageModel,preserveSource?sourceEditParts(shot,originals,fixed,feedback):[{text:"Create a photorealistic commercial photograph using THIS EXACT product in the references. "+
         "Preserve its packaging geometry, cap, material, colours, logo, brand and legible front label, with the same number of sale units. "+
         "Primary product-state reference is image "+shot.source_reference_index+" (1-based). Reproduce only the product state/mechanism shown there. Other references provide supporting identity, not a requirement to show every state at once. If the primary shows the cap removed for a real pump, keep it removed; never turn a closed cap into a pump. "+
@@ -207,7 +209,7 @@ async function main(){
     if(!accepted) throw new Error("Source consistency review failed after retries at image "+(i+1));
   }
   writeJSON(path.join(output,"image-reviews.json"),reviews);
-  progress("reviewing","10张场景图已通过AI对照检查，正在整理图文与交付文件。",10);
+  progress("reviewing",`${totalScenes}张场景图已通过AI对照检查，正在整理图文与交付文件。`,totalScenes,totalScenes);
   process.stdout.write(JSON.stringify({...fixed,source_facts:fixed,source_nm_id:String(input.task.nmId),facts_verified:true,
     review:{subject_consistency_verified:true,method:"native_multimodal_comparison",requires_seller_review:true},items}));
 }

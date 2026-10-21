@@ -224,7 +224,7 @@ def run_generator(task, facts, evidence, output, command, progress=None, check_l
                         data = json.loads(marker.read_text())
                         signature = (data.get('status'), data.get('summary'))
                         if signature != last_progress:
-                            progress(data['status'], data['summary'], {'completed':data.get('completed',0),'total':10,'published':False})
+                            progress(data['status'], data['summary'], {'completed':data.get('completed',0),'total':data.get('total',5),'published':False})
                             last_progress = signature
             if process.returncode:
                 raise GatewayError('Generation program failed; see its private diagnostics')
@@ -285,7 +285,7 @@ def execute_task(task, gateway, config, worker_id, store=None):
         evidence, facts = acquire_source(claimed, gateway, config, output, facts)
         write_json(output / "source-evidence.json", evidence)
         if not facts.get('source_images'):
-            summary = '已读取商品名称，但原图暂时无法取得。请在本聊天发送该商品原图，即可继续制作10套场景图文。' if evidence.get('product') else '此链接暂时无法读取。请确认链接，或在本聊天发送商品原图和名称，即可继续。'
+            summary = '已读取商品名称，但原图暂时无法取得。请在本聊天发送该商品原图，即可继续制作5套场景图文。' if evidence.get('product') else '此链接暂时无法读取。请确认链接，或在本聊天发送商品原图和名称，即可继续。'
             update('needs_input', summary, {'missing_fields':['source_images'], 'source_retrieved':bool(evidence.get('product')), 'source_errors':evidence.get('errors',[]), 'published':False})
             return 'needs_input'
         command = config.get("FISSION_GENERATOR_CMD")
@@ -301,11 +301,12 @@ def execute_task(task, gateway, config, worker_id, store=None):
         generated_path = output / 'generated-assets.json'
         generated = read_cache(generated_path)
         if generated is None:
-            update('generating_text', '正在依据原商品规划10种应用场景与俄语文案。')
+            update('generating_text', '正在依据原商品规划5种应用场景与俄语文案。')
             generated = run_generator(claimed, facts, evidence, output, command, progress=update, check_lease=lease.ensure_owned, account=config.get("ANTIGRAVITY_ACCOUNT"))
             write_json(generated_path, generated)
         validate_generated(generated, claimed, facts)
-        update('reviewing', '正在整理10套图文与可下载压缩包。', {'completed':10,'total':10,'published':False})
+        scene_count = len(generated.get('items', [])) or 5
+        update('reviewing', f'正在整理{scene_count}套图文与可下载压缩包。', {'completed':scene_count,'total':scene_count,'published':False})
         bundle_path = output / 'bundle-paths.json'
         bundle = read_cache(bundle_path)
         if bundle is None:
@@ -314,9 +315,9 @@ def execute_task(task, gateway, config, worker_id, store=None):
         validate_bundle(bundle, claimed["nmId"])
         def owned():
             lease.call('/api/executor/heartbeat', {**identity, 'capabilities':capabilities(config)})
-        update('reviewing', '10套图文已生成，正在发送图片、描述与压缩包到本聊天。', {'completed':10,'total':10,'published':False})
+        update('reviewing', f'{scene_count}套图文已生成，正在发送图片、描述与压缩包到本聊天。', {'completed':scene_count,'total':scene_count,'published':False})
         receipt = FeishuDelivery(config).deliver(claimed, bundle, output / 'delivery-receipts.json', before_send=owned)
-        update('ready', '10种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。',
+        update('ready', f'{scene_count}种同款场景图片、俄语标题与描述已发送本聊天，并附完整压缩包。请复核商品外观和文案。',
                {'artifacts_verified':True, 'manifest_path':bundle['manifest_path'], 'excel_path':bundle['excel_path'],
                 'archive_path':bundle['archive_path'], 'delivery_verified':True,
                 'delivered_scenes':len(receipt['scenes']), 'archive_message_id':receipt['archive_message_id'], 'published':False})
@@ -325,7 +326,7 @@ def execute_task(task, gateway, config, worker_id, store=None):
         logger.error('Feishu delivery deferred: %s',str(exc))
         if not lost.is_set():
             try:
-                update('awaiting_delivery', '10套场景图文已生成，但飞书图片或文件发送暂未完成。请检查机器人资源权限后发送“重试”，会继续发送已生成结果。',
+                update('awaiting_delivery', '5套场景图文已生成，但飞书图片或文件发送暂未完成。请检查机器人资源权限后发送“重试”，会继续发送已生成结果。',
                        {'artifacts_verified':True,'manifest_path':bundle['manifest_path'], 'excel_path':bundle['excel_path'],
                         'archive_path':bundle['archive_path'],'delivery_verified':False,'delivery_error':str(exc),'published':False})
             except GatewayError:

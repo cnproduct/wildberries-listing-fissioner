@@ -153,7 +153,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
   const isTokenValid = claims && !isExpired && claims.t === false;
 
   if (!task) {
-    let msg = "本聊天还没有找到您的商品任务，无法核实上架状态。\n如需裂变上架，请先发送 WB 商品链接或货号（如：WB 货号 1879785812）。系统将自动读取原图并生成10种同款场景图文，复核无误后即可发布到您的 WB 店铺。";
+    let msg = "本聊天还没有找到您的商品任务，无法核实上架状态。\n如需裂变上架，请先发送 WB 商品链接或货号（如：WB 货号 1879785812）。系统将自动读取原图并生成5种同款场景图文，复核无误后即可发布到您的 WB 店铺。";
     msg += "\n\n【当前店铺绑定状态】\n";
     if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
       msg += "• 已绑定店铺：" + shopName + "（仓库ID：" + warehouseId + "，API令牌：" + (token ? (isExpired ? "已过期" : "已配置") : "未上传") + "）\n";
@@ -162,7 +162,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
     }
     msg += "\n【店铺上架标准流程】\n";
     msg += "1. 绑定店铺：发送“店铺名：RR010 / 仓库ID：2200772 / API令牌：<您的令牌>”；\n";
-    msg += "2. 生成裂变图文：发送 WB 商品链接或“WB 货号 1879785812”（多店铺可附带“店铺：RR010”），自动生成10套场景图与俄语标题描述并回传飞书；\n";
+    msg += "2. 生成裂变图文：发送 WB 商品链接或“WB 货号 1879785812”（多店铺可附带“店铺：RR010”），自动生成5套场景图与俄语标题描述并回传飞书；\n";
     msg += "3. 复核与发布：复核本聊天的图文资产包后，发送“确认上架”进入店铺发布核验。";
     return msg;
   }
@@ -179,7 +179,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
     if (/(?:前台|链接|主图|一张图|单图|多图|详情页)/.test(questionText)) {
       answer += "【前台图文说明】\n";
       answer += "原商品链接展示原商品资料，不会因生成裂变图文自动改变；实际图片数量需打开对应链接核验。\n";
-      answer += "裂变助手已为该商品生成10套全新的同款场景图（当前自动流程为每套1张主场景图，8张图库需另行制作核验）及俄语描述，已交付本聊天，尚未推送到您的店铺。\n\n";
+      answer += "裂变助手已为该商品生成5套全新的同款场景图（当前自动流程为每套1张主场景图，8张图库需另行制作核验）及俄语描述，已交付本聊天，尚未推送到您的店铺。\n\n";
     }
     answer += "【未自动上架原因】\n";
     answer += "1. 本批尚未保存明确的店铺上传指令。收到指令后将优先上传现有商品资料与图片，精修随后继续。\n";
@@ -225,7 +225,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
     };
     return prefix + "状态：" + (labels[task.status] || "制作中") + "。\n\n" +
       "【未上架原因】\n" +
-      "当前商品任务仍在图文制作流水线中，尚未完成10套场景图文的制作与交付，因此未进入店铺上架环节。\n" +
+      "当前商品任务仍在图文制作流水线中，尚未完成5套场景图文的制作与交付，因此未进入店铺上架环节。\n" +
       "素材制作完成后会自动交付本聊天供您复核。可发送“进度”查看实时状态。";
   }
 
@@ -239,7 +239,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
   if (task.status === "awaiting_delivery") {
     return prefix + "状态：图文已生成，等待飞书交付。\n\n" +
       "【未上架原因】\n" +
-      "10套场景图文已制作完成，正在推送至飞书聊天。交付完成后即可复核并确认上架。\n" +
+      "5套场景图文已制作完成，正在推送至飞书聊天。交付完成后即可复核并确认上架。\n" +
       "若长时间未收到，可发送“重试”重新发送。";
   }
 
@@ -277,8 +277,8 @@ export async function executeListingCommand(senderId, chatId, env, requested = n
   }
 
   const d=task.details || {};
-  const delivery=d.delivery_verified===true && d.delivered_scenes===10 && !!d.archive_message_id;
-  let reply=prefix+(delivery?"已找到本批已交付的10套图文，无需重新提交商品链接或重复生成。":"已找到本批图文记录，交付凭据还需维护者核验。")+"\n";
+  const delivery=d.delivery_verified===true && [5, 10].includes(d.delivered_scenes) && !!d.archive_message_id;
+  let reply=prefix+(delivery?"已找到本批已交付的5套图文，无需重新提交商品链接或重复生成。":"已找到本批图文记录，交付凭据还需维护者核验。")+"\n";
   reply+=(boundStore && creds?.api_token)?"店铺绑定："+boundStore+" 的凭据已配置，发布权限仍需核验；发货仓库在库存设置时核验。\n":"店铺绑定或发布凭据尚不完整，需先核验目标店铺。\n";
   if(!delivery) return reply+"交付记录尚未核验，暂不能保存发布执行请求。请维护者核对本批成品记录。";
   if(!boundStore || !creds?.api_token) return reply+"请先补齐当前店铺的绑定及发布凭据；本次尚未保存发布请求。";
@@ -310,7 +310,7 @@ export function explainFailure(task) {
   const stages={source_analysis:"原图分析",scene_plan:"场景规划",image_review:"图片审查",generating_text:"原图分析与文案规划",generating_images:"图片制作"};
   if (Object.hasOwn(stages,d.stage)) answer+="失败阶段："+stages[d.stage]+"。\n";
   if (Number.isInteger(d.failed_image) && d.failed_image>=1 && d.failed_image<=10) answer+="停止位置：第"+d.failed_image+"张图片。\n";
-  if (Number.isInteger(d.completed) && d.completed>=0 && d.completed<=10) answer+="已通过检查："+d.completed+"/10张。\n";
+  if (Number.isInteger(d.completed) && d.completed>=0 && d.completed<=10) answer+="已通过检查："+d.completed+"/"+(d.total || 5)+"张。\n";
   const known=[...new Set((Array.isArray(d.issue_codes)?d.issue_codes:[]).filter(x=>Object.hasOwn(issues,x)))];
   if (known.length) answer+="核对发现："+known.map(x=>issues[x]).join("；")+"。\n";
   if (['generation_auth_failed','executor_auth_failed','generator_not_configured','generation_model_unavailable'].includes(code)) answer+="下一步：维护者修复服务后，在本聊天发送“重试”。";
@@ -591,7 +591,7 @@ export function isStoreOperationQuestion(text) {
   if (/(?:裂变定价|价格梯度|定价策略|定价规则|怎么定价|如何定价|价格怎么定|怎么改价|如何改价|调价策略|折扣设置|活动定价|利润测算)/i.test(t)) return true;
   if (/(?:初始库存|默认库存|库存设置|怎么改库存|如何改库存|库存同步|安全库存|库存规则|设置多少库存)/i.test(t)) return true;
   if (/(?:俄语标题|标题优化|标题规则|标题怎么写|关键词优化|SEO优化|搜索权重|自然流量|主图规范|八图规范|8张图|图片要求|转化率优化|点击率)/i.test(t)) return true;
-  if (/(?:1拆10|一拆十).*(?:规则|策略|优势|好处|怎么玩|是什么|有什么用|运营|逻辑|模式)/i.test(t)) return true;
+  if (/(?:1拆5|一拆五|1拆10|一拆十).*(?:规则|策略|优势|好处|怎么玩|是什么|有什么用|运营|逻辑|模式)/i.test(t)) return true;
   if (/(?:防关联|同款去重|重复铺货|会被判重复吗|广告投流|推广引流|新品破零|怎么起店|如何起店|出单技巧|选品策略|怎么选品|如何选品)/i.test(t)) return true;
   if (/^(?:运营|选品|定价|改价|库存|改库存|标题|关键词|SEO|推广|投流|广告|流量|防关联|去重|多店|多店铺)[？?！!。]*$/i.test(t)) return true;
   return false;
@@ -603,12 +603,12 @@ export async function answerStoreOperationQuestion(senderId, env, text = "") {
   const shopName = creds?.shop_name || "未绑定";
   const warehouseId = creds?.warehouse_id || "未绑定";
 
-  let reply = "【Wildberries 店铺运营与 1拆10 裂变策略指南】\n";
+  let reply = "【Wildberries 店铺运营与 1拆5 裂变策略指南】\n";
   reply += "• 当前关联店铺：" + shopName + "（发货仓库：" + warehouseId + "）\n\n";
-  reply += "1. 1拆10 视觉与 SEO 矩阵防重：\n";
-  reply += "   针对单款潜力爆品生成 10 套差异化应用人群与生活场景图文、俄语 SEO 标题（严格控制在 60 字符以内，覆盖高搜索量俄语核心词与长尾词）及结构化详情描述，提升类目搜索曝光并避免同质化铺货。\n";
+  reply += "1. 1拆5 视觉与 SEO 矩阵防重：\n";
+  reply += "   针对单款潜力爆品生成 5 套差异化应用人群与生活场景图文、俄语 SEO 标题（严格控制在 60 字符以内，覆盖高搜索量俄语核心词与长尾词）及结构化详情描述，提升类目搜索曝光并避免同质化铺货。\n";
   reply += "2. 阶梯定价测款策略（测试价格弹性）：\n";
-  reply += "   建议采用价格梯度布局：前 5 款（L01~L05）在基准价上浮 +2% ~ +15% 测试高毛利承受力；后 5 款（L06~L10）下浮 -2% ~ -10% 吸引比价流量与转化。\n";
+  reply += "   建议采用价格梯度布局：围绕基准价设置 5 档差异化阶梯价格（如上浮 +2%~+10% 测试高毛利承受力，下浮 -2%~-8% 吸引比价流量与转化），避免同价内卷。\n";
   reply += "3. 库存与改价安全规范：\n";
   reply += "   新品建卡建议设置安全初始库存（如 5 件/款）并关联指定发货仓库；后续对线上商品改价或改库存均需卖家核验确认，系统不会未经授权自动改动线上价格或库存。\n";
   reply += "4. 多店铺隔离与日常推进：\n";
@@ -712,7 +712,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
       if (verifyRes.ok) {
         const vData = await verifyRes.json();
         if (vData.valid) {
-          return "🎉 窗口商业授权码激活成功！\n• 授权店铺：" + (vData.store_name || "已绑定店铺") + "\n• 绑定对话窗口 ID：" + winId + "\n• 授权到期时间：" + (vData.expires_at || "有效期内") + "\n\n您现在可以直接发送 Wildberries 商品链接或货号启动 1拆10 裂变制作。";
+          return "🎉 窗口商业授权码激活成功！\n• 授权店铺：" + (vData.store_name || "已绑定店铺") + "\n• 绑定对话窗口 ID：" + winId + "\n• 授权到期时间：" + (vData.expires_at || "有效期内") + "\n\n您现在可以直接发送 Wildberries 商品链接或货号启动 1拆5 裂变制作。";
         }
         return "⚠️ 授权码核验未通过：" + (vData.message || vData.error || "请确认该授权码对应的对话窗口 ID 是否为 " + winId);
       }
@@ -754,7 +754,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     const prefix = "本次查询：WB 货号 " + latest.task.nmId + "\n请求编号：" + latest.task.task_id + "\n";
     if (latest.task.status === "ready") {
       const d=latest.task.details || {};
-      return prefix + (d.delivery_verified && d.delivered_scenes === 10 && d.archive_message_id ? "这条请求的10套图文及压缩包已有交付记录，无需重复发送。" : "这条请求被标记完成，但交付凭据不足，需要维护者核验。") + "图文交付不代表已上架。若您指另一条失败请求，请发送“重试 请求编号”。";
+      return prefix + (d.delivery_verified && [5, 10].includes(d.delivered_scenes) && d.archive_message_id ? "这条请求的5套图文及压缩包已有交付记录，无需重复发送。" : "这条请求被标记完成，但交付凭据不足，需要维护者核验。") + "图文交付不代表已上架。若您指另一条失败请求，请发送“重试 请求编号”。";
     }
     const resumed = await coordinate(env,"/retry",{key:latest.key,message_id:messageId});
     return prefix + (resumed.ok ? "已恢复该商品请求，将重新核验已有图片并继续制作，完成后回传本聊天。" : "未启动重复重试，任务状态可能已变化。请发送“进度”查看。");
@@ -802,7 +802,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   const product = resolveProduct(text);
   if (product) {
     if (/(?:？|\?|为什么|为何|为啥|怎么|哪里|咋|什么原因|怎么回事|可否|是否|能否|好像|似乎|只有|没有|未见|不见|前台|只显示|没显示)/.test(text)) {
-      return "识别到商品货号 " + product.nmId + "。如需为该商品制作10套裂变场景图文，请直接发送该货号或商品链接；如需查询状态，请发送“进度”或“为何未上架”。";
+      return "识别到商品货号 " + product.nmId + "。如需为该商品制作5套裂变场景图文，请直接发送该货号或商品链接；如需查询状态，请发送“进度”或“为何未上架”。";
     }
     const stores=targetStores(text);
     if(stores.length>1) return "检测到多个目标店铺，请明确一家后再提交商品；本次未创建制作任务。";
@@ -816,7 +816,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     let ack = "已记录商品请求：WB 货号 " + product.nmId + "\n请求编号：" + messageId;
     if (targetStore) ack += "\n目标店铺：" + targetStore;
     ack += "\n当前状态：" + (h.online ? "等待处理，执行服务在线。" : "等待处理，执行服务暂时离线；恢复后会继续处理。") +
-      "\n系统会自动读取原图和商品信息，制作10种应用场景的图片、俄语标题和描述，完成后回传本聊天。可发送“进度”查看。";
+      "\n系统会自动读取原图和商品信息，制作5种应用场景的图片、俄语标题和描述，完成后回传本聊天。可发送“进度”查看。";
     return ack;
   }
   if (/(进度|多久|完成了吗|好了吗|有在执行吗|在做吗|开始了吗|状态|排队|完成了没)/.test(text)) {
@@ -834,7 +834,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   }
   if (/^(?:sku|条形码|barcode|商品编码)\s*[:：]/i.test(text)) return "卖家 SKU 或条码不能直接定位 WB 商品，请提供平台货号 nmId 或详情链接。";
   if (/(发货|出单|打单|物流|集运|贴标|条码|fbs|fbo|fbw|运费)/i.test(text)) return "发货地址、标签、时限与履约条件请按具体订单和店铺合同核验。请提供店铺市场、销售模式与后台发货要求。";
-  return "请发送一个 WB 商品链接或“WB 货号 123456789”。系统自动读取原图，生成10种同款产品的场景图片、俄语标题和描述，并回传飞书。可发送“进度”查看状态。";
+  return "请发送一个 WB 商品链接或“WB 货号 123456789”。系统自动读取原图，生成5种同款产品的场景图片、俄语标题和描述，并回传飞书。可发送“进度”查看状态。";
 }
 export async function handleFeishuEvent(payload, env) {
   const { message, sender } = payload.event || {};
@@ -848,7 +848,7 @@ export async function handleFeishuEvent(payload, env) {
     reply = await buildReply(content.text.trim(), senderId, message.message_id, env, message.chat_id);
   } else if (message.message_type === "image" && typeof content.image_key === "string") {
     const response = await coordinate(env, "/input", { sender_id: senderId, chat_id: message.chat_id, message_id:message.message_id, facts: { source_image_key: content.image_key, source_image_message_id: message.message_id } });
-    reply = response.ok ? "已收到商品原图，将继续制作10套场景图片与描述。" : "请先提交商品链接，或等待当前处理结束后再发送原图。";
+    reply = response.ok ? "已收到商品原图，将继续制作5套场景图片与描述。" : "请先提交商品链接，或等待当前处理结束后再发送原图。";
   } else return;
   const token = await getTenantAccessToken(env);
   await sendFeishuReply(token, message.message_id, message.chat_id, reply, senderId);
