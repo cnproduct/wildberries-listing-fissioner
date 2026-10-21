@@ -29,14 +29,14 @@ def resolve_product(text):
 
 
 def build_local_reply(text):
-    if re.match(r"^(?:绑定api|api)\s*[:：]", text, re.I) or (len(text) > 80 and not re.search(r"\s", text) and not text.lower().startswith(("http:", "https:"))):
-        return "当前没有店铺授权核验或直传功能，请勿在聊天中发送 API Token。本次没有保存令牌，也没有验证权限。"
+    if re.match(r"^(?:个人令牌|绑定个人令牌|绑定api|api)\s*[:：]", text, re.I) or (len(text) > 80 and not re.search(r"\s", text) and not text.lower().startswith(("http:", "https:"))):
+        return "当前没有店铺授权核验或直传功能，请勿在聊天中发送个人令牌。本次没有保存令牌，也没有验证权限。"
     nm_id = resolve_product(text)
     if nm_id:
         return f"已收到 WB 货号 {nm_id}。本地长连接服务仅演示消息接收，未保存持久化任务；自动制作和店铺发布尚未接通，暂无完成时间。请在 Agent 中运行 Skill 制作并审查资产。"
     if re.search(r"进度|多久|完成|状态|执行|排队", text):
         return "本地服务没有持久化执行任务或生成结果，不能提供制作进度。自动制作与店铺发布尚未接通。"
-    return "请提供 WB 详情页链接或平台货号 nmId，并准备原图、真实规格和包装测量。卖家 SKU、条码不能直接定位 WB 商品。当前为消息接收演示，请勿发送 API Token。"
+    return "请提供 WB 详情页链接或平台货号 nmId，并准备原图、真实规格和包装测量。卖家 SKU、条码不能直接定位 WB 商品。当前为消息接收演示，请勿发送个人令牌。"
 
 
 def create_feishu_client(app_id, app_secret):

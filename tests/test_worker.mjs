@@ -137,8 +137,9 @@ test("webhook rejects invalid events and validates challenge before processing",
 });
 test("tokens and shop credentials are saved and persisted to coordinator storage on demand", async () => {
   const f=fixture();
-  const reply = await buildReply("店铺名：RR010\n仓库ID：2200772\nAPI令牌：dummy_token", "user", "m", f.env);
+  const reply = await buildReply("店铺名：RR010\n仓库ID：2200772\n个人令牌：dummy_token", "user", "m", f.env);
   assert.match(reply, /成功记录并落盘/);
+  assert.match(reply, /WB 个人令牌：已成功落盘存储/);
   const creds = await f.storage.get("credentials:user");
   assert.equal(creds.shop_name, "RR010");
   assert.equal(creds.warehouse_id, "2200772");
@@ -329,17 +330,21 @@ test('maintenance diagnostic is bounded and never changes active task or trigger
 
 
 test('isCredentialQuestion detects various natural credential and authorization inquiries', () => {
+  assert.equal(isCredentialQuestion('请核验与授权刚才上传的店铺WB个人令牌'), true);
   assert.equal(isCredentialQuestion('请核验与授权刚才上传的店铺WB API 令牌'), true);
   assert.equal(isCredentialQuestion('核验令牌'), true);
+  assert.equal(isCredentialQuestion('核验个人令牌'), true);
   assert.equal(isCredentialQuestion('验证令牌'), true);
   assert.equal(isCredentialQuestion('授权令牌'), true);
   assert.equal(isCredentialQuestion('检查WB API'), true);
   assert.equal(isCredentialQuestion('店铺授权状态'), true);
+  assert.equal(isCredentialQuestion('我的个人令牌有效吗'), true);
   assert.equal(isCredentialQuestion('我的API令牌有效吗'), true);
   assert.equal(isCredentialQuestion('查看店铺信息'), true);
   assert.equal(isCredentialQuestion('查询店铺凭据'), true);
   assert.equal(isCredentialQuestion('核验授权'), true);
   // Non-credential inquiries
+  assert.equal(isCredentialQuestion('个人令牌：dummy'), false);
   assert.equal(isCredentialQuestion('API令牌：dummy'), false);
   assert.equal(isCredentialQuestion('店铺名：RR010'), false);
   assert.equal(isCredentialQuestion('进度'), false);
@@ -651,7 +656,7 @@ test('all four inquiry categories (店铺绑定, 窗口授权, 店铺上架, 店
     return Response.json({});
   };
   try {
-    // 1. 店铺绑定、店铺授权、已绑定店铺信息、仓库ID、API令牌、绑定状态、授权时长
+    // 1. 店铺绑定、店铺授权、已绑定店铺信息、仓库ID、个人令牌、绑定状态、授权时长
     const credentialQueries = [
       '如何绑定店铺',
       '你已经绑定店铺了吗',
@@ -660,6 +665,7 @@ test('all four inquiry categories (店铺绑定, 窗口授权, 店铺上架, 店
       '店铺授权',
       '已经绑定店铺的信息',
       '仓库ID',
+      '个人令牌',
       'API令牌',
       'API key',
       '绑定状态',
@@ -679,7 +685,7 @@ test('all four inquiry categories (店铺绑定, 窗口授权, 店铺上架, 店
       assert.match(reply, /绑定状态：已绑定/);
       assert.match(reply, /RR010/);
       assert.match(reply, /2200772/);
-      assert.match(reply, /API 令牌（API Key）/);
+      assert.match(reply, /个人令牌：/);
       assert.match(reply, /授权时长：剩余/);
       assert.doesNotMatch(reply, /请发送一个 WB 商品链接/);
     }

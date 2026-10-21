@@ -156,12 +156,12 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
     let msg = "本聊天还没有找到您的商品任务，无法核实上架状态。\n如需裂变上架，请先发送 WB 商品链接或货号（如：WB 货号 1879785812）。系统将自动读取原图并生成5种同款场景图文，复核无误后即可发布到您的 WB 店铺。";
     msg += "\n\n【当前店铺绑定状态】\n";
     if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
-      msg += "• 已绑定店铺：" + shopName + "（仓库ID：" + warehouseId + "，API令牌：" + (token ? (isExpired ? "已过期" : "已配置") : "未上传") + "）\n";
+      msg += "• 已绑定店铺：" + shopName + "（仓库ID：" + warehouseId + "，个人令牌：" + (token ? (isExpired ? "已过期" : "已配置") : "未上传") + "）\n";
     } else {
-      msg += "• 尚未绑定店铺凭据（请发送“店铺名 / 仓库ID / API令牌”完成绑定）\n";
+      msg += "• 尚未绑定店铺凭据（请发送“店铺名 / 仓库ID / 个人令牌”完成绑定）\n";
     }
     msg += "\n【店铺上架标准流程】\n";
-    msg += "1. 绑定店铺：发送“店铺名：RR010 / 仓库ID：2200772 / API令牌：<您的令牌>”；\n";
+    msg += "1. 绑定店铺：发送“店铺名：RR010 / 仓库ID：2200772 / 个人令牌：<您的个人令牌>”；\n";
     msg += "2. 生成裂变图文：发送 WB 商品链接或“WB 货号 1879785812”（多店铺可附带“店铺：RR010”），自动生成5套场景图与俄语标题描述并回传飞书；\n";
     msg += "3. 复核与发布：复核本聊天的图文资产包后，发送“确认上架”进入店铺发布核验。";
     return msg;
@@ -189,7 +189,7 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
       answer += "【店铺授权状态】凭据已配置，实际账户与发布权限待核验\n";
       answer += "• 店铺名称：" + shopName + "\n";
       answer += "• 发货仓库：" + warehouseId + "\n";
-      answer += "• API 令牌：已配置，尚未超过所记录的有效期\n\n";
+      answer += "• 个人令牌：已配置，尚未超过所记录的有效期\n\n";
       answer += "【下一步操作】\n";
       answer += "商品图文资产包已就绪。发送“上架”或“确认上架”（或“继续上架”）后，系统核实目标账户与建卡必需资料，优先上传商品并返回真实货号；图片精修、图库补全、价格和库存随后继续完善。";
     } else if (creds && (creds.shop_name || creds.warehouse_id || creds.api_token)) {
@@ -197,23 +197,23 @@ export async function explainListingStatus(senderId, chatId, env, requested = nu
       answer += "• 店铺名称：" + shopName + "\n";
       answer += "• 发货仓库：" + warehouseId + "\n";
       if (!token) {
-        answer += "• API 令牌：尚未上传\n\n";
+        answer += "• 个人令牌：尚未上传\n\n";
         answer += "【下一步操作】\n";
-        answer += "请发送“API令牌：<您的全权限WB API令牌>”完成绑定，核验通过后即可执行店铺上架。";
+        answer += "请发送“个人令牌：<您的全权限WB个人令牌>”完成绑定，核验通过后即可执行店铺上架。";
       } else if (isExpired) {
-        answer += "• API 令牌：已过期（到期日：" + new Date(claims.exp * 1000).toISOString().slice(0, 10) + "）\n\n";
+        answer += "• 个人令牌：已过期（到期日：" + new Date(claims.exp * 1000).toISOString().slice(0, 10) + "）\n\n";
         answer += "【下一步操作】\n";
-        answer += "请在 WB 卖家后台重新创建全权限 API 令牌并发送更新。";
+        answer += "请在 WB 卖家后台重新创建全权限个人令牌并发送更新。";
       } else {
-        answer += "• API 令牌：权限不足（需全权限读写令牌）\n\n";
+        answer += "• 个人令牌：权限不足（需全权限读写令牌）\n\n";
         answer += "【下一步操作】\n";
-        answer += "请在 WB 卖家后台创建全权限 API 令牌并发送更新。";
+        answer += "请在 WB 卖家后台创建全权限个人令牌并发送更新。";
       }
     } else {
       answer += "【店铺授权状态】尚未绑定\n";
       answer += "尚未检测到您的 WB 店铺凭据。\n\n";
       answer += "【下一步操作】\n";
-      answer += "如需发布到您的 WB 店铺，请按以下格式发送店铺凭据：\n店铺名：RR010\n仓库ID：2200772\nAPI令牌：<您的WB API令牌>";
+      answer += "如需发布到您的 WB 店铺，请按以下格式发送店铺凭据：\n店铺名：RR010\n仓库ID：2200772\n个人令牌：<您的WB个人令牌>";
     }
     return answer;
   }
@@ -346,7 +346,7 @@ export function parseJwtClaims(token) {
 export function isWindowAuthQuestion(text) {
   const t = String(text || "").replace(/@_user_\d+\s*/g, "").trim();
   if (!t) return false;
-  if (/^(?:API令牌|api_token|api\s*key|apikey|token|令牌|店铺名|店铺名称|店铺|shop|仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*\S+/i.test(t)) {
+  if (/^(?:个人令牌|API令牌|api_token|api\s*key|apikey|token|令牌|店铺名|店铺名称|店铺|shop|仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*\S+/i.test(t)) {
     return false;
   }
   if (/(?:令牌|token|api|key|密钥|凭据|仓库|店铺|绑定状态|授权时长)/i.test(t) && !/(?:窗口|卡密|激活码|授权码|扫码|试用|续费)/i.test(t)) {
@@ -427,7 +427,7 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
 
   if (shopName || warehouseId || token) {
     reply += "• 店铺绑定状态：已绑定\n";
-    reply += "• 当前绑定店铺：" + (shopName || "未指定") + "（仓库ID：" + (warehouseId || "未指定") + "，API令牌：" + (token ? "已配置" : "未上传") + "）\n";
+    reply += "• 当前绑定店铺：" + (shopName || "未指定") + "（仓库ID：" + (warehouseId || "未指定") + "，个人令牌：" + (token ? "已配置" : "未上传") + "）\n";
     if (expDate) {
       reply += "• 店铺授权时长：剩余 " + remainingDays + " 天（有效期至 " + expDate + "）\n";
     }
@@ -438,7 +438,7 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
   reply += "\n【窗口授权与开通操作指南（支持 2 种授权方式）】\n";
   reply += "1. 方式一（飞书扫码授权）：打开 https://diytale.com/apply ，使用飞书扫描二维码即可自动提取资料并生成专属账号，支持申请 3天免费测试 或 1个月/2个月/自定义多月，提交后联系代理商（泉州庄总微信/电话：18558989771）审批即可生效；\n";
   reply += "2. 方式二（对话窗口 ID 授权，同 diytale.com/admin）：将上方「当前对话窗口 ID：" + windowId + "」发给管理员或代理商签发专属授权码（LIC-RSA-...），在本聊天发送“激活授权 LIC-RSA-...”即可绑定；桌面端新建上架会话窗口时，发送代理商代码（如 zhuang_qz）或 16 位激活卡密（WB-XXXX-...）也可绑定本机与当前会话窗口；\n";
-  reply += "3. 绑定 WB 店铺凭据：在本聊天直接发送“店铺名：RR010 / 仓库ID：2200772 / API令牌：<您的WB令牌>”即可绑定店铺。";
+  reply += "3. 绑定 WB 店铺凭据：在本聊天直接发送“店铺名：RR010 / 仓库ID：2200772 / 个人令牌：<您的WB个人令牌>”即可绑定店铺。";
   return reply;
 }
 
@@ -449,7 +449,7 @@ function feishuWindowId(senderId) {
 export function isCredentialQuestion(text) {
   const t = String(text || "").replace(/@_user_\d+\s*/g, "").trim();
   if (!t) return false;
-  if (/^(?:API令牌|api_token|api\s*key|apikey|token|令牌|店铺名|店铺名称|店铺|shop|仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*\S+/i.test(t)) {
+  if (/^(?:个人令牌|API令牌|api_token|api\s*key|apikey|token|令牌|店铺名|店铺名称|店铺|shop|仓库ID|仓库|warehouse(?:_id)?)\s*[:：]\s*\S+/i.test(t)) {
     return false;
   }
   if (/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(t)) {
@@ -462,10 +462,10 @@ export function isCredentialQuestion(text) {
       !/(?:绑定|绑店|令牌|token|api|key|密钥|凭据|仓库|授权时长|授权时间|授权有效期|授权状态|店铺授权|店铺信息|店铺名|绑定状态)/i.test(t)) {
     return false;
   }
-  if (/(?:API\s*令牌|api_token|api\s*key|apikey|api_key|api\s*密钥|仓库\s*id|warehouse_id|店铺凭据|绑定状态|授权时长|授权时间|授权有效期|授权剩余|剩余时长|令牌有效期|多久到期|什么时候到期|到期时间)/i.test(t)) {
+  if (/(?:个人令牌|API\s*令牌|api_token|api\s*key|apikey|api_key|api\s*密钥|仓库\s*id|warehouse_id|店铺凭据|绑定状态|授权时长|授权时间|授权有效期|授权剩余|剩余时长|令牌有效期|多久到期|什么时候到期|到期时间)/i.test(t)) {
     return true;
   }
-  if (/^(?:绑定店铺|店铺绑定|绑店|店铺授权|授权店铺|已经绑定店铺的信息|已绑定店铺信息|绑定店铺信息|绑定的店铺信息|店铺信息|我的店铺|当前店铺|当前绑定店铺|店铺名称|店铺名|仓库|仓库ID|仓库号|发货仓库|我的仓库|仓库信息|API令牌|API|token|令牌|我的令牌|我的token|令牌信息|绑定状态|授权状态|授权时长|授权有效期|授权到期|有效期|核验店铺|核验令牌|验证令牌|检查令牌|店铺状态|查看凭据|核验API|验证API|核验授权|如何绑定店铺|怎么绑定店铺|你已经绑定店铺了吗|已经绑定店铺了吗|绑定店铺了吗|绑定了吗|绑店了吗|如何绑店|怎么绑店|绑定仓库|绑定API|绑定令牌|查看店铺|更换店铺|切换店铺|多店铺绑定)[？?！!。]*$/i.test(t)) {
+  if (/^(?:绑定店铺|店铺绑定|绑店|店铺授权|授权店铺|已经绑定店铺的信息|已绑定店铺信息|绑定店铺信息|绑定的店铺信息|店铺信息|我的店铺|当前店铺|当前绑定店铺|店铺名称|店铺名|仓库|仓库ID|仓库号|发货仓库|我的仓库|仓库信息|个人令牌|API令牌|API|token|令牌|我的令牌|我的个人令牌|我的token|令牌信息|绑定状态|授权状态|授权时长|授权有效期|授权到期|有效期|核验店铺|核验令牌|核验个人令牌|验证令牌|检查令牌|店铺状态|查看凭据|核验API|验证API|核验授权|如何绑定店铺|怎么绑定店铺|你已经绑定店铺了吗|已经绑定店铺了吗|绑定店铺了吗|绑定了吗|绑店了吗|如何绑店|怎么绑店|绑定仓库|绑定API|绑定令牌|绑定个人令牌|查看店铺|更换店铺|切换店铺|多店铺绑定)[？?！!。]*$/i.test(t)) {
     return true;
   }
   if (/(?:核验|验证|授权|检查|查看|查询|确认|绑定|绑店|设置|配置|更换|切换|修改|更新|上传|填写|解绑|给我|发我|发给我|看看|告诉我|是什么|是多少|有哪些|哪个|什么).*(?:令牌|token|api|key|密钥|店铺|凭据|仓库|授权|新店|多店|时长|有效期|到期)/i.test(t)) {
@@ -488,13 +488,13 @@ export async function verifyAndReportCredentials(senderId, env, text = "") {
   if (!credsRes.ok) return "暂无法查询店铺凭据，请稍后重试。";
   const { credentials } = await credsRes.json();
   if (!credentials || (!credentials.api_token && !credentials.shop_name && !credentials.warehouse_id)) {
-    return "尚未找到您上传的店铺凭据。\n• 绑定状态：未绑定\n如需绑定并核验店铺，请按以下格式发送：\n店铺名：RR010\n仓库ID：2200772\nAPI令牌：<您的WB API令牌>";
+    return "尚未找到您上传的店铺凭据。\n• 绑定状态：未绑定\n如需绑定并核验店铺，请按以下格式发送：\n店铺名：RR010\n仓库ID：2200772\n个人令牌：<您的WB个人令牌>";
   }
   const shopName = credentials.shop_name || "未指定";
   const warehouseId = credentials.warehouse_id || "未指定";
   const token = credentials.api_token;
   const bindingGuide = /(?:如何|怎么|怎样|哪里|步骤|流程|方法|格式|更换|切换|修改|重新|多店|新店|解绑|店铺绑定|绑定店铺|绑店)/i.test(text)
-    ? "\n\n【店铺绑定与切换方法】\n如需更换店铺、绑定新店铺或更新凭据，请直接在本聊天按以下格式发送：\n店铺名：RR010\n仓库ID：2200772\nAPI令牌：<您的WB API令牌>\n（支持多店铺绑定，发送商品货号时可附带店铺名如“WB 货号 1879785812 店铺：RR010”指定目标店铺）"
+    ? "\n\n【店铺绑定与切换方法】\n如需更换店铺、绑定新店铺或更新凭据，请直接在本聊天按以下格式发送：\n店铺名：RR010\n仓库ID：2200772\n个人令牌：<您的WB个人令牌>\n（支持多店铺绑定，发送商品货号时可附带店铺名如“WB 货号 1879785812 店铺：RR010”指定目标店铺）"
     : "";
 
   let report = "已核验您的店铺凭据与授权状态：\n";
@@ -503,7 +503,7 @@ export async function verifyAndReportCredentials(senderId, env, text = "") {
   report += "• 发货仓库（仓库ID）：" + warehouseId;
 
   if (!token) {
-    report += "\n• API 令牌：尚未上传\n• 授权时长：待上传令牌后核验\n• 授权状态：未完成授权。请发送“API令牌：<您的令牌>”完成绑定。" + bindingGuide;
+    report += "\n• 个人令牌：尚未上传\n• 授权时长：待上传令牌后核验\n• 授权状态：未完成授权。请发送“个人令牌：<您的个人令牌>”完成绑定。" + bindingGuide;
     return report;
   }
 
@@ -514,7 +514,7 @@ export async function verifyAndReportCredentials(senderId, env, text = "") {
 
   const claims = parseJwtClaims(token);
   if (!claims) {
-    report += "\n• API 令牌（API Key）：" + maskedToken + "\n• 授权时长：长期/待核验\n• 授权状态：凭据已存储（非标准 JWT 格式或测试令牌）。若用于正式上架，请提供 WB 后台生成的全权限 API 令牌。" + bindingGuide;
+    report += "\n• 个人令牌：" + maskedToken + "\n• 授权时长：长期/待核验\n• 授权状态：凭据已存储（非标准 JWT 格式或测试令牌）。若用于正式上架，请提供 WB 后台生成的全权限个人令牌。" + bindingGuide;
     return report;
   }
 
@@ -526,7 +526,7 @@ export async function verifyAndReportCredentials(senderId, env, text = "") {
   const oidInfo = claims.oid ? "，商户OID：" + claims.oid : "";
 
   if (isExpired) {
-    report += "\n• API 令牌（API Key）：已过期（到期日：" + expDate + oidInfo + "）\n";
+    report += "\n• 个人令牌：已过期（到期日：" + expDate + oidInfo + "）\n";
     report += "• 授权时长：已到期（剩余 0 天）\n";
     report += "• 授权状态：未通过。令牌已失效，请重新生成并上传新令牌。" + bindingGuide;
     return report;
@@ -565,14 +565,14 @@ export async function verifyAndReportCredentials(senderId, env, text = "") {
   }
 
   if (liveStatus === "auth_rejected") {
-    report += "• API 令牌：平台拒绝授权（401/403，可能已被吊销或权限不足）\n";
+    report += "• 个人令牌：平台拒绝授权（401/403，可能已被吊销或权限不足）\n";
     report += "• 授权时长：有效期至 " + expDate + "\n";
-    report += "• 授权状态：未通过。请在 WB 卖家后台重新生成全权限 API 令牌并发送。" + bindingGuide;
+    report += "• 授权状态：未通过。请在 WB 卖家后台重新生成全权限个人令牌并发送。" + bindingGuide;
     return report;
   }
 
   const permText = isReadWrite ? "全权限读写 (Full Access)" : "只读权限 (Read-Only)";
-  report += "• API 令牌（API Key）：" + maskedToken + "（" + permText + oidInfo + "）\n";
+  report += "• 个人令牌：" + maskedToken + "（" + permText + oidInfo + "）\n";
   report += "• 授权时长：" + (remainingDays !== null ? "剩余 " + remainingDays + " 天（有效期至 " + expDate + "）" : "长期有效") + "\n";
 
   if (liveStatus === "live_ok") {
@@ -666,7 +666,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   }
 
   const credentialText = /^资料\s*[:：]/.test(text) ? "" : text;
-  const hasTokenMatch = credentialText.match(/(?:API\s*令牌|API\s*密钥|API\s*key|apikey|api_token|绑定\s*api|token|令牌|api)\s*[:：]\s*([^\s]+)/i) ||
+  const hasTokenMatch = credentialText.match(/(?:个人令牌|WB\s*个人令牌|API\s*令牌|API\s*密钥|API\s*key|apikey|api_token|绑定\s*(?:个人令牌|api)|token|令牌|api)\s*[:：]\s*([^\s]+)/i) ||
     (credentialText.match(/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/) ? [null, credentialText] : null);
   const hasShopMatch = credentialText.match(/(?:店铺名称|店铺名|店铺|shop(?:_name)?)\s*[:：]\s*([^\s]+)/i);
   const hasWarehouseMatch = credentialText.match(/(?:发货仓库|仓库\s*ID|仓库号|仓库|warehouse(?:_id)?)\s*[:：]\s*([^\s]+)/i);
@@ -705,7 +705,7 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     let replyText = "已成功记录并落盘店铺凭据：\n";
     if (creds.shop_name) replyText += "• 店铺名称：" + creds.shop_name + "（🔒已与当前授权ID强绑定）\n";
     if (creds.warehouse_id) replyText += "• 发货仓库：" + creds.warehouse_id + "\n";
-    if (creds.api_token) replyText += "• WB API 令牌：已成功落盘存储\n";
+    if (creds.api_token) replyText += "• WB 个人令牌：已成功落盘存储\n";
     replyText += "已保存到您的账号；尚未验证令牌权限。图文制作不会自动上架，发布店铺商品需另行核验与授权。";
     return replyText;
   }
