@@ -362,6 +362,28 @@ export function isWindowAuthQuestion(text) {
   return false;
 }
 
+export function deriveConversationWindowId(seed) {
+  const s = String(seed || "").trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)) {
+    return s.toLowerCase();
+  }
+  let h1 = 0x811c9dc5, h2 = 0x01000193, h3 = 0x12345678, h4 = 0x9abcdef0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ ((c + i) & 0xff), 0x811c9dc5) >>> 0;
+    h3 = Math.imul(h3 ^ (c << 3), 0x01000193) >>> 0;
+    h4 = Math.imul(h4 ^ (c + i * 31), 0x811c9dc5) >>> 0;
+  }
+  const hex = (
+    h1.toString(16).padStart(8, "0") +
+    h2.toString(16).padStart(8, "0") +
+    h3.toString(16).padStart(8, "0") +
+    h4.toString(16).padStart(8, "0")
+  ).toLowerCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 export async function answerWindowAuthQuestion(senderId, env, text = "") {
   const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
   const creds = credsRes.ok ? (await credsRes.json()).credentials : null;
@@ -372,6 +394,7 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
   const nowSec = Math.floor(Date.now() / 1000);
   const expDate = claims?.exp ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : null;
   const remainingDays = claims?.exp ? Math.max(0, Math.ceil((claims.exp - nowSec) / 86400)) : null;
+  const windowId = feishuWindowId(senderId);
 
   let feishuAccount = null;
   if (typeof senderId === "string" && senderId.startsWith("ou_")) {
@@ -389,6 +412,7 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
 
   let reply = "【窗口授权与账号核验状态】\n";
   reply += "• 当前飞书标识：" + (senderId || "未识别") + "\n";
+  reply += "• 当前对话窗口 ID：" + windowId + "\n";
   if (feishuAccount && feishuAccount.account_no) {
     reply += "• 系统专属账号：" + feishuAccount.account_no + "\n";
   }
@@ -398,7 +422,7 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
   } else if (feishuAccount && feishuAccount.status === "pending") {
     reply += "• 飞书账号授权：已提交申请，等待代理商审批开通\n";
   } else {
-    reply += "• 飞书账号授权：可通过飞书扫码自助开通或使用激活卡密绑定\n";
+    reply += "• 飞书账号授权：可通过飞书扫码自助开通或使用对话窗口 ID 激活卡密绑定\n";
   }
 
   if (shopName || warehouseId || token) {
@@ -411,11 +435,15 @@ export async function answerWindowAuthQuestion(senderId, env, text = "") {
     reply += "• 店铺绑定状态：尚未绑定 WB 店铺凭据\n";
   }
 
-  reply += "\n【窗口授权与开通操作指南】\n";
-  reply += "1. 飞书扫码自助开通/续期：打开 https://diytale.com/apply ，使用飞书扫描二维码即可自动提取资料并生成专属账号，支持申请 3天免费测试 或 1个月/2个月/自定义多月，提交后联系代理商（泉州庄总微信/电话：18558989771）审批即可生效；\n";
-  reply += "2. 桌面端窗口授权：在桌面端新建上架会话窗口时，发送代理商代码（如 zhuang_qz）或 16 位激活卡密（WB-XXXX-...）即可绑定本机与当前会话窗口；\n";
+  reply += "\n【窗口授权与开通操作指南（支持 2 种授权方式）】\n";
+  reply += "1. 方式一（飞书扫码授权）：打开 https://diytale.com/apply ，使用飞书扫描二维码即可自动提取资料并生成专属账号，支持申请 3天免费测试 或 1个月/2个月/自定义多月，提交后联系代理商（泉州庄总微信/电话：18558989771）审批即可生效；\n";
+  reply += "2. 方式二（对话窗口 ID 授权，同 diytale.com/admin）：将上方「当前对话窗口 ID：" + windowId + "」发给管理员或代理商签发专属授权码（LIC-RSA-...），在本聊天发送“激活授权 LIC-RSA-...”即可绑定；桌面端新建上架会话窗口时，发送代理商代码（如 zhuang_qz）或 16 位激活卡密（WB-XXXX-...）也可绑定本机与当前会话窗口；\n";
   reply += "3. 绑定 WB 店铺凭据：在本聊天直接发送“店铺名：RR010 / 仓库ID：2200772 / API令牌：<您的WB令牌>”即可绑定店铺。";
   return reply;
+}
+
+function feishuWindowId(senderId) {
+  return deriveConversationWindowId(senderId || "default-fission-window");
 }
 
 export function isCredentialQuestion(text) {
@@ -673,6 +701,28 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     replyText += "已保存到您的账号；尚未验证令牌权限。图文制作不会自动上架，发布店铺商品需另行核验与授权。";
     return replyText;
   }
+  const licActivateMatch = text.match(/^(?:激活授权|绑定授权|授权码)\s*[:：]?\s*(LIC-RSA-[A-Za-z0-9_.-]+)$/i);
+  if (licActivateMatch) {
+    const licKey = licActivateMatch[1].trim();
+    const winId = feishuWindowId(senderId);
+    try {
+      const verifyRes = await fetch("https://diytale.com/api/verify?key=" + encodeURIComponent(licKey) + "&mid=" + encodeURIComponent(winId), {
+        signal: AbortSignal.timeout(2500)
+      });
+      if (verifyRes.ok) {
+        const vData = await verifyRes.json();
+        if (vData.valid) {
+          return "🎉 窗口商业授权码激活成功！\n• 授权店铺：" + (vData.store_name || "已绑定店铺") + "\n• 绑定对话窗口 ID：" + winId + "\n• 授权到期时间：" + (vData.expires_at || "有效期内") + "\n\n您现在可以直接发送 Wildberries 商品链接或货号启动 1拆10 裂变制作。";
+        }
+        return "⚠️ 授权码核验未通过：" + (vData.message || vData.error || "请确认该授权码对应的对话窗口 ID 是否为 " + winId);
+      }
+    } catch {}
+    return "已收到授权码 " + licKey + "（当前对话窗口 ID：" + winId + "）。请在管理后台核对窗口 ID 绑定状态后使用。";
+  }
+  if (/^(?:获取会话ID|获取窗口ID|我的会话ID|我的窗口ID|查看会话ID|查看窗口ID)[？?！!。]*$/i.test(text)) {
+    const winId = feishuWindowId(senderId);
+    return "【当前对话窗口授权信息】\n• 当前对话窗口 ID：" + winId + "\n• 当前飞书 Open ID：" + (senderId || "未识别") + "\n\n👉 方式一（对话窗口 ID 授权）：请复制上方「当前对话窗口 ID」发给管理员或代理商，在后台选择「通过对话窗口 ID 授权」生成专属卡密；\n👉 方式二（飞书扫码授权）：打开 https://diytale.com/apply 使用飞书扫码即可一键提取资料开通。";
+  }
   if (isWindowAuthQuestion(text) && !resolveProduct(text)) {
     return await answerWindowAuthQuestion(senderId, env, text);
   }
@@ -837,6 +887,15 @@ export default {
         executor_online: h.online, executor_last_seen: h.last_seen || null,
         generation_enabled: h.online && !!h.capabilities.generation, publishing_enabled: h.online && !!h.capabilities.publishing,
         task_counts: h.counts, pending_events:h.pending_events || 0, event_failures:h.event_failures || 0, version: "2026-10-14-upload-first", coordinator_version: h.version || null });
+    }
+    if (request.method === "GET" && ["/admin", "/fission/admin", "/agent", "/apply"].includes(url.pathname)) {
+      const targetPath = url.pathname === "/fission/admin" ? "/admin" : url.pathname;
+      const redirectUrl = new URL("https://diytale.com" + targetPath);
+      redirectUrl.searchParams.set("bot", "fission");
+      for (const [k, v] of url.searchParams.entries()) {
+        if (k !== "bot") redirectUrl.searchParams.set(k, v);
+      }
+      return Response.redirect(redirectUrl.toString(), 302);
     }
     if (url.pathname.startsWith("/media/") && request.method === "GET") {
       const key = url.pathname.slice("/media/".length);
