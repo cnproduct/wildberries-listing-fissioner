@@ -677,11 +677,9 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
     if (hasTokenMatch) creds.api_token = hasTokenMatch[1].trim();
     if (hasShopMatch) creds.shop_name = hasShopMatch[1].trim();
     if (hasWarehouseMatch) creds.warehouse_id = hasWarehouseMatch[1].trim();
-    const stored = await coordinate(env, "/credentials", { sender_id: senderId, credentials: creds });
-    if (!stored.ok) return "店铺资料未保存，请检查输入后重试。";
     if (typeof senderId === "string" && senderId.startsWith("ou_") && creds.shop_name) {
       try {
-        await fetch("https://diytale.com/api/feishu/bot-bind", {
+        const bindRes = await fetch("https://diytale.com/api/feishu/bot-bind", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -692,10 +690,20 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
           }),
           signal: AbortSignal.timeout(1500)
         });
+        if (bindRes.status === 409) {
+          const bindErr = await bindRes.json().catch(() => ({}));
+          return `⚠️ 店铺名称强绑定限制：您的授权 ID 已强绑定店铺「${bindErr.bound_store || "原绑定店铺"}」，一旦绑定店铺名称后即与授权 ID 永久强绑定，不可更改为「${creds.shop_name}」。`;
+        }
       } catch {}
     }
+    const stored = await coordinate(env, "/credentials", { sender_id: senderId, credentials: creds });
+    if (stored.status === 409) {
+      const errData = await stored.json().catch(() => ({}));
+      return `⚠️ 店铺名称强绑定限制：当前授权 ID 已强绑定店铺「${errData.bound_store || "原绑定店铺"}」，一旦绑定店铺名称后即与授权 ID 永久强绑定，不可更改为「${creds.shop_name}」。`;
+    }
+    if (!stored.ok) return "店铺资料未保存，请检查输入后重试。";
     let replyText = "已成功记录并落盘店铺凭据：\n";
-    if (creds.shop_name) replyText += "• 店铺名称：" + creds.shop_name + "\n";
+    if (creds.shop_name) replyText += "• 店铺名称：" + creds.shop_name + "（🔒已与当前授权ID强绑定）\n";
     if (creds.warehouse_id) replyText += "• 发货仓库：" + creds.warehouse_id + "\n";
     if (creds.api_token) replyText += "• WB API 令牌：已成功落盘存储\n";
     replyText += "已保存到您的账号；尚未验证令牌权限。图文制作不会自动上架，发布店铺商品需另行核验与授权。";
@@ -705,15 +713,26 @@ export async function buildReply(text, senderId, messageId, env, chatId = null) 
   if (licActivateMatch) {
     const licKey = licActivateMatch[1].trim();
     const winId = feishuWindowId(senderId);
+    const credsRes = await coordinate(env, "/credentials?sender=" + encodeURIComponent(senderId));
+    const existingCreds = credsRes.ok ? (await credsRes.json()).credentials : null;
+    const boundShop = existingCreds?.shop_name || "";
     try {
-      const verifyRes = await fetch("https://diytale.com/api/verify?key=" + encodeURIComponent(licKey) + "&mid=" + encodeURIComponent(winId), {
+      const verifyUrl = "https://diytale.com/api/verify?key=" + encodeURIComponent(licKey) +
+        "&mid=" + encodeURIComponent(winId) +
+        "&conversation_id=" + encodeURIComponent(winId) +
+        "&sid=S-1-5-21-1000000000-1000000000-1000000000-1001" +
+        (boundShop ? "&store=" + encodeURIComponent(boundShop) : "");
+      const verifyRes = await fetch(verifyUrl, {
         signal: AbortSignal.timeout(2500)
       });
-      if (verifyRes.ok) {
-        const vData = await verifyRes.json();
-        if (vData.valid) {
-          return "🎉 窗口商业授权码激活成功！\n• 授权店铺：" + (vData.store_name || "已绑定店铺") + "\n• 绑定对话窗口 ID：" + winId + "\n• 授权到期时间：" + (vData.expires_at || "有效期内") + "\n\n您现在可以直接发送 Wildberries 商品链接或货号启动 1拆5 裂变制作。";
+      const vData = await verifyRes.json().catch(() => ({}));
+      if (vData.valid) {
+        if (vData.store_name && !boundShop) {
+          await coordinate(env, "/credentials", { sender_id: senderId, credentials: { shop_name: vData.store_name } });
         }
+        return "🎉 窗口商业授权码激活成功！\n• 授权店铺：" + (vData.store_name ? vData.store_name + "（🔒已强绑定）" : "未绑定（首次绑定店铺后将自动与授权ID强绑定）") + "\n• 绑定对话窗口 ID：" + winId + "\n• 授权到期时间：" + (vData.expires_at || "有效期内") + "\n\n您现在可以直接发送 Wildberries 商品链接或货号启动 1拆5 裂变制作。";
+      }
+      if (vData.code === "store_binding_locked" || vData.error || vData.message) {
         return "⚠️ 授权码核验未通过：" + (vData.message || vData.error || "请确认该授权码对应的对话窗口 ID 是否为 " + winId);
       }
     } catch {}
